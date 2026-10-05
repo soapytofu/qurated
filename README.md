@@ -1,127 +1,151 @@
-# Qurated: the HUA course advisor
+# Qurated
 
-A Harvard Undergraduate Association chatbot that recommends FAS courses using Q report data (ratings, workload, student comments) and the my.harvard course catalog (when courses meet, Gen Eds, descriptions, syllabi).
-Only signed-in `@college.harvard.edu` Google accounts can use it.
+**The Harvard Undergraduate Association's course advisor.** Students describe what they want from a class
+("a fun Gen Ed with a light workload", "something like CS50 but less work"), and Qurated recommends FAS courses.
+Its answers draw on what past students said in their **Q reports** and on the **my.harvard catalog**.
 
-## 1. Scrape Q reports (`qscrape/`)
-Uses your own HarvardKey session. Keep the data private: Q reports are for the Harvard community.
+- 🎓 **Grounded answers:** ratings, weekly workload and real student quotes from Q reports, plus terms offered, meeting times, Gen Ed / Divisional Distribution / QRD, descriptions and syllabus links from my.harvard. Every quote is checked word-for-word against the source.
+- ⚡ **Fast:** the first course card appears in about 2 seconds, and the full answer finishes in about 3.
+- 🏷️ **Course tags:** each course is tagged with what students consistently say about it (e.g. "engaging lectures", "heavy reading").
+- ❤️ **Student accounts:** favorites, preferences and courses already taken are saved per student, and courses they've taken are never recommended.
+- 🔒 **Harvard-only:** sign-in requires a verified `@college.harvard.edu` Google account.
 
-```bash
-cd qscrape
-uv run scrape.py login                                    # sign in with HarvardKey + Duo in the Chrome window
-uv run scrape.py index                                    # list every report for every term
-uv run scrape.py reports --term "2026 Spring" "2025 Fall" # download + parse (resumable; rerun after re-login)
+> **Data policy.** Q reports are meant for the Harvard community. This repo contains **code only**: no Q data, catalog
+> data, student accounts or secrets. Run the scrapers yourself with your own HarvardKey, keep the data private, and
+> get the relevant offices (e.g. the Office of Undergraduate Education, OUE) on board before opening Qurated to
+> other students.
+
+---
+
+## How it works
+
+```
+ OFFLINE (refresh each term)                          ONLINE (each question)
+ ───────────────────────────                          ──────────────────────
+ Q reports ──scrape.py───► reports/*.json ─┐           Browser (HTML/CSS/JS)
+ (your HarvardKey session)                 │             │ POST /api/chat  (signed-in only)
+ my.harvard ─catalog.py──► catalog/*.json ─┼► CourseDB ◄─┤ FastAPI server
+ (public pages)                            │  in-memory  │  1. pre-check: does this need a course search?
+ Claude Haiku ─tag_courses.py► tags.json ──┘  BM25 index │  2. retrieval: filters + keyword search (~2 ms)
+   (Batches API)                                          │  3. ONE Claude Sonnet call → structured JSON
+ SQLite: favorites / courses taken / prefs ◄──────────────┤  4. stream: each card as it's written, then advice
 ```
 
-## 1b. Scrape the course catalog (`qscrape/catalog.py`)
-Public my.harvard pages, no login needed. Re-run each term to refresh.
+1. **Scrape (offline).**
+   - `qscrape/scrape.py` uses Playwright and your HarvardKey session to download every Q report, then parses its ratings, workload, recommend score, enrollment reasons and comments.
+   - `qscrape/catalog.py` reads my.harvard's public course search one subject at a time, expands multi-section courses such as Expos and languages, and fetches each course's detail page.
+   - Raw pages are saved gzipped, so a parser fix can be re-applied without downloading again.
+2. **Tag (offline).** `app/tag_courses.py` has Claude Haiku summarize each course's comments into 3–5 sentiment-labeled tags plus a one-line summary, using the half-price Batches API.
+3. **Index.** `app/courses.py` merges Q reports, catalog and tags into one record per course. A weighted BM25 keyword index covers titles, descriptions, Gen Eds, section topics, tags and comments, with filters for term, workload, Gen Ed, undergrad level and courses already taken.
+4. **Answer (`app/pipeline.py`).**
+   - A quick pre-check (a regex, or Claude Haiku) skips searching for questions like "what's a Gen Ed?".
+   - The server picks the top 8 candidate courses itself, with no LLM involved.
+   - It then makes **one** Claude Sonnet 5.5 call, with thinking off and a JSON-schema output, that returns `{picks, advice}`.
+   - The server parses the JSON as it streams: each pick becomes a course card the moment it's complete, then the advice streams in.
+   - Follow-ups like "which of those is lightest?" reuse the courses already shown.
 
-```bash
-cd qscrape
-uv run catalog.py list       # every FAS section for Fall 2026 + Spring 2027, one subject at a time (~15 min)
-uv run catalog.py details    # one detail page per course: description, Gen Ed, QRD, syllabus link (~1.5 h, resumable)
-```
+### Why one call instead of an agent loop
+I benchmarked several approaches (`app/experiments/bench.py`) on 8 fixed student questions, with Claude Opus as a
+blind judge scoring fit, grounding and helpfulness from 1 to 5:
 
-## 2. Tag courses (`app/tag_courses.py`)
-Summarizes each course's student comments into 3-5 tags with Claude Haiku via the Batches API (about $1 for ~1,500 courses).
-Re-run after more scraping; it only tags new courses.
+| Approach | First card | Full answer | Quality | Cost/answer |
+|---|---|---|---|---|
+| Agent loop (Claude calls search/detail/card tools) | 8.5s | 11.1s | 3.54 | ~3.8¢ |
+| **Server-side retrieval + one Sonnet call, thinking off** | **~1.8s** | **~3.0s** | **3.79** | **~1.1¢** |
 
+Turning thinking off was the biggest single win. Retrieving on the server removed 2–3 round trips to the model.
+Hedged requests (a duplicate request is sent if no tokens arrive within 2.5s) and an IPv4-only HTTP transport
+remove the remaining latency spikes.
+
+---
+
+## Setup
+
+### Prerequisites
+- macOS or Linux with [uv](https://docs.astral.sh/uv/) (installs the right Python automatically)
+- Google Chrome (only for the Q report scraper's HarvardKey login)
+- An [Anthropic API key](https://console.anthropic.com/)
+- A Google OAuth Client ID for sign-in: [step-by-step guide](docs/google-signin.md), about 10 minutes, free
+
+### 1. Configure
 ```bash
 cd app
-uv run tag_courses.py --sample 5   # quick check
+cp .env.example .env
+# Fill in ANTHROPIC_API_KEY, GOOGLE_CLIENT_ID, and a long random SESSION_SECRET, e.g.:
+python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | Claude API access | required |
+| `GOOGLE_CLIENT_ID` | Google sign-in ([guide](docs/google-signin.md)) | required |
+| `SESSION_SECRET` | Signs login cookies | required |
+| `ALLOWED_EMAIL_DOMAINS` | Comma-separated domains allowed to sign in | `college.harvard.edu` |
+| `DAILY_QUESTION_LIMIT` | Questions per student per day | `40` |
+| `ADMIN_EMAILS` | Comma-separated admin emails | (none) |
+| `HTTPS_ONLY` | Set to `1` when served over HTTPS (secure cookies) | `0` |
+
+### 2. Get the data
+```bash
+cd qscrape
+# Q reports (needs your HarvardKey)
+uv run scrape.py login                                       # sign in with HarvardKey + Duo in the Chrome window
+uv run scrape.py index                                       # list every report for every term
+uv run scrape.py reports --term "2026 Spring" "2025 Fall"    # download + parse (resumable)
+
+# Course catalog (public, no login)
+uv run catalog.py list                                       # every FAS section, one subject at a time (~20 min)
+uv run catalog.py details                                    # one detail page per course (~2 h, resumable)
+
+# Tags (about $1 for ~1,600 courses via the Batches API)
+cd ../app
 uv run tag_courses.py --all
 ```
+Everything is resumable. If your HarvardKey session expires, run `uv run scrape.py login` again and re-run the same command.
 
-## 3. Set up Google sign-in (one time)
-You'll create a free "OAuth Client ID" that tells Google which website is allowed to show the sign-in button. No billing or credit card is needed. Takes about 10 minutes.
-
-**Which Google account to use:** a personal Gmail works best. Harvard-managed accounts may not be allowed to create Cloud projects. Which account *owns* the project doesn't affect who can *sign in* to hua.
-
-**Step 1: Create a project**
-1. Go to https://console.cloud.google.com/ and sign in. Accept the terms if this is your first time.
-2. Click the project picker at the top left (it may say "Select a project") → **New project**.
-3. Project name: `hua`. Leave Organization as "No organization" → **Create**.
-4. Wait a few seconds, then make sure `hua` is selected in the project picker.
-
-**Step 2: Set up the sign-in screen (the "consent screen")**
-Google now calls this section **Google Auth Platform**. Older guides call it "OAuth consent screen".
-1. Open ☰ menu → **APIs & Services → OAuth consent screen** (or search "Google Auth Platform" in the top search bar).
-2. If you see **Get started**, click it and fill in:
-   - **App information:** App name `hua`; User support email: your email.
-   - **Audience:** choose **External**. Internal only appears for Workspace orgs and would block Harvard accounts.
-   - **Contact information:** your email.
-   - Check the agreement box → **Create**.
-3. Go to **Audience** in the left sidebar. Under Publishing status you'll see **Testing**. Pick one:
-   - **Recommended:** click **Publish app** → Confirm. hua only asks for name and email (non-sensitive), so Google does **not** require a review. Any Harvard student can sign in.
-   - **Or** stay in Testing and add each person's email under **Test users** (up to 100). Anyone not listed sees "Access blocked".
-4. Optional, under **Branding**: add a logo and app home page. Leave **Data access / Scopes** alone. hua needs only the default `openid`, `email` and `profile`.
-
-**Step 3: Create the Client ID**
-1. Left sidebar → **Clients** (or **APIs & Services → Credentials → + Create credentials → OAuth client ID**).
-2. **Create client**:
-   - Application type: **Web application**
-   - Name: `hua web`
-   - **Authorized JavaScript origins**: click **+ Add URI** and add both:
-     - `http://localhost`
-     - `http://localhost:8765`
-
-     Type them exactly like this: `http`, not `https`; no trailing slash; no path. Google may reject `http://127.0.0.1` here, so use **localhost** in your browser.
-   - **Authorized redirect URIs**: leave empty. hua uses the pop-up sign-in, which doesn't need one.
-   - **Create**.
-3. A dialog shows your **Client ID**, which looks like `1234567890-abc123def456.apps.googleusercontent.com`. Copy it.
-   - You can ignore the **Client secret**. hua doesn't use it.
-   - You can always find the ID again under **Clients**.
-
-**Step 4: Give it to hua**
-1. Open `app/.env` (for example, `open -e ~/Downloads/"hua chatbot"/app/.env`).
-2. Set `GOOGLE_CLIENT_ID=1234567890-abc123def456.apps.googleusercontent.com`. No quotes or spaces. Save.
-3. Restart the server. `.env` is only read at startup; `--reload` doesn't watch it. Press Ctrl+C in the server terminal, then:
-   ```bash
-   cd ~/Downloads/"hua chatbot"/app && uv run uvicorn server:app --reload --host 127.0.0.1 --port 8765
-   ```
-4. Open **http://localhost:8765** (not 127.0.0.1). You should see a white **Continue with Google** button.
-   New origins can take 5 minutes (occasionally longer) to start working.
-
-**Step 5: Test it**
-- Sign in with your `@college.harvard.edu` account. You should land on the hua home page with your initials or photo at the top right.
-- Sign in with a personal Gmail. You should see "hua is only for Harvard students…". That means the gate works.
-
-**Troubleshooting**
-| What you see | Fix |
-|---|---|
-| "Google sign-in isn't configured yet" | `GOOGLE_CLIENT_ID` is empty or the server wasn't restarted. |
-| No button, or "The given origin is not allowed for the given client ID" | The address bar must exactly match an Authorized JavaScript origin, including the port. Use `http://localhost:8765`, check for typos, and wait 5 minutes after editing. |
-| "Access blocked: hua has not completed the Google verification process" | The app is still in Testing. Publish it (Step 2.3) or add that email as a test user. |
-| "Access blocked … your administrator" with the Harvard account | Harvard's Google admins limit some third-party apps. Basic name/email sign-in normally works (Veritasty uses it). If it's blocked, contact HUIT. |
-| Pop-up opens and closes instantly | Allow pop-ups for localhost, and make sure third-party cookies aren't blocked for `accounts.google.com`. |
-| "hua is only for Harvard students" with a Harvard account | Only `@college.harvard.edu` is allowed by default. Add others, e.g. `ALLOWED_EMAIL_DOMAINS=college.harvard.edu,g.harvard.edu`, then restart. |
-
-**Going live later:** in **Clients → hua web**, add your real site (e.g. `https://hua.example.org`) as another Authorized JavaScript origin. In `.env`, set `HTTPS_ONLY=1` so login cookies are only sent over HTTPS.
-
-Sign-in verifies Google's signed ID token on the server and only accepts verified accounts whose email domain
-(and Google Workspace `hd` claim) is in `ALLOWED_EMAIL_DOMAINS` (default `college.harvard.edu`).
-
-## 4. Run the app (`app/`)
+### 3. Run
 ```bash
 cd app
-cp .env.example .env        # first time: fill in ANTHROPIC_API_KEY, SESSION_SECRET, GOOGLE_CLIENT_ID
 uv run uvicorn server:app --reload --host 127.0.0.1 --port 8765
 ```
-Open http://localhost:8765. The app picks up newly scraped reports and new tags automatically.
+Open **http://localhost:8765** (use `localhost`, which must match your Google OAuth origin) and sign in.
+The server picks up newly scraped data and tags automatically, with no restart needed.
 
-### Cost controls
-- Chat uses Claude Sonnet 5.5 at low effort; a Claude Haiku pre-check skips Q-data search when a message doesn't need it.
-- Each reply shows its cost. Typical: ~$0.01 (no search) to ~$0.02-0.03 (search + cards).
-- `DAILY_QUESTION_LIMIT` (default 40) caps questions per student per day. Also set a monthly spend limit in the Anthropic Console.
-
-## Reading feedback
-Students can send feedback from the speech-bubble button in the top bar. Each message is one line in `app/data/feedback.jsonl` (time, type, message, and email only if they ticked "include my email").
-
+### Refreshing each term
 ```bash
-cat ~/Downloads/"hua chatbot"/app/data/feedback.jsonl
+cd qscrape && uv run catalog.py list && uv run catalog.py details      # new catalog
+uv run scrape.py login && uv run scrape.py index && uv run scrape.py reports --term "<new term>"
+cd ../app && uv run tag_courses.py --all                                # tag newly reviewed courses
 ```
 
-## Student accounts
-Favorites, preferences and courses taken are saved per student in `app/data/qurated.db` (SQLite).
-Courses marked as taken (from any card, the course page, or "Courses I've taken" in the account menu) are never recommended.
-Back up `app/data/` if you move servers; it's gitignored.
+---
+
+## Project structure
+```
+qscrape/               offline data collection
+  scrape.py            Q reports: HarvardKey login, index, download (Playwright)
+  parse.py             Q report HTML → structured JSON
+  catalog.py           my.harvard catalog: sections + course details
+app/                   the web app
+  server.py            FastAPI: Google auth, accounts API, chat endpoint (SSE), feedback
+  pipeline.py          fast answer pipeline: plan → retrieve → one streamed Claude call
+  courses.py           CourseDB: merges Q + catalog + tags; BM25 search and filters
+  db.py                SQLite store for favorites, courses taken, preferences
+  tag_courses.py       Claude Haiku tagging via the Batches API
+  experiments/bench.py latency / cost / quality benchmark with an LLM judge
+  static/              frontend: sign-in page, chat UI, course cards, account drawers
+docs/google-signin.md  Google OAuth setup walkthrough
+```
+
+Local-only, gitignored folders: `qscrape/data/` (scraped data), `app/data/` (tags, student accounts,
+feedback), `.env`, and `.browser-profile/` (your saved HarvardKey session).
+
+## Operating notes
+- **Costs:** about 1¢ per answer (Claude Sonnet 5.5) plus about 0.04¢ for the occasional Haiku pre-check. Cost is logged on the server, never shown to students. Set a monthly spend limit in the Anthropic Console as well.
+- **Feedback:** students send it from the speech-bubble button. Read it with `cat app/data/feedback.jsonl`. Emails are only saved if the student opts in.
+- **Back up** `app/data/` (student accounts) if you move machines.
+- **Slow responses (15–20s) on some Wi-Fi networks:** the server already forces IPv4 for API calls, because some networks' IPv6 routes hang for about 16s. If you see this with another HTTP client, check `curl -6 https://api.anthropic.com`.
+
+## Credits
+Built for the Harvard Undergraduate Association. Not an official Harvard University service.
+Course data © its respective owners. Q reports courtesy of the Harvard FAS Office of Undergraduate Education.
