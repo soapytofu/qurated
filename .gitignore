@@ -1,0 +1,16 @@
+# Secrets: never commit
+.env
+**/.env
+**/.browser-profile/
+
+# Harvard data (Q reports, catalog, tags) and student accounts/feedback: keep private, local only
+qscrape/data/
+app/data/
+app/experiments/results.json
+
+# Python / tooling / OS
+**/.venv/
+**/__pycache__/
+*.pyc
+.DS_Store
+.claude/

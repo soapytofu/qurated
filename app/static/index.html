@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Qurated · HUA Course Advisor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css?v=13">
+</head>
+<body>
+  <nav class="globalnav">
+    <div class="gn-inner">
+      <a class="brand" href="/" aria-label="Qurated home"><span class="shield">Q</span><span class="wordmark">Qurated</span></a>
+      <div class="gn-links">
+        <button class="gn-link" id="nav-ask">Ask</button>
+        <button class="gn-link" id="nav-favs">Favorites</button>
+        <button class="gn-link" id="nav-how">How it works</button>
+      </div>
+      <div class="gn-icons">
+        <button class="iconbtn" id="new-chat" title="New conversation" aria-label="New conversation">
+          <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+        <button class="iconbtn" id="open-feedback" title="Send feedback" aria-label="Send feedback">
+          <svg viewBox="0 0 24 24"><path d="M5 5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-8l-4 3v-3H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/></svg>
+        </button>
+        <button class="iconbtn" id="open-favs" title="Favorites" aria-label="Favorites">
+          <svg viewBox="0 0 24 24"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/></svg>
+          <span class="badge" id="fav-count" hidden>0</span>
+        </button>
+        <button class="avatar-btn" id="account" aria-haspopup="true" aria-label="Account"><span id="me-initials">·</span></button>
+      </div>
+    </div>
+  </nav>
+  <div class="menu account-menu" id="account-menu" hidden>
+    <div class="acct-name" id="me-name"></div>
+    <div class="acct-email" id="me-email"></div>
+    <div class="acct-quota" id="me-quota"></div>
+    <button id="open-taken">Courses I've taken</button>
+    <button id="logout">Sign out</button>
+  </div>
+
+  <!-- ===== Home (before the first question) ===== -->
+  <div id="home">
+    <section class="tile tile-dark hero">
+      <p class="eyebrow">Qurated · from the HUA</p>
+      <h1>Find the course<br>that fits you.</h1>
+      <p class="tagline" id="hero-sub">Ask in plain English. Answers come straight from past students' Q reports.</p>
+      <div class="cta-row">
+        <button class="pill pill-fill" id="cta-ask">Ask a question</button>
+        <button class="pill pill-ghost" id="cta-prefs">Set preferences</button>
+      </div>
+    </section>
+
+    <section class="tile tile-light" id="stats-tile">
+      <h2 class="tile-head">Real reviews. Real numbers.</h2>
+      <div class="bigstats">
+        <div><span class="big" id="st-courses">–</span><span class="cap">courses</span></div>
+        <div><span class="big" id="st-comments">–</span><span class="cap">student comments</span></div>
+        <div><span class="big" id="st-terms">–</span><span class="cap">semesters of Q data</span></div>
+      </div>
+    </section>
+
+    <section class="tile-grid" id="how">
+      <div class="tile tile-dark small">
+        <h2>Ask like you'd ask<br>an upperclassman.</h2>
+        <p class="tagline">"Something like CS50 but less work." "A fun Gen Ed with no final." Qurated checks whether your question needs Q data, searches the reviews, and shows its picks as cards.</p>
+        <div class="links">
+          <button class="link try">A fun Gen Ed with a light workload ›</button>
+          <button class="link try">Intro CS courses students loved ›</button>
+          <button class="link try">Classes people call life-changing ›</button>
+        </div>
+      </div>
+      <div class="tile tile-white small">
+        <h2>Favorites,<br>side by side.</h2>
+        <p class="tagline dark">Every course comes tagged with what students say about it. Tap the heart on the ones you like, and Qurated compares them for you.</p>
+        <div class="links"><button class="link" id="tile-favs">Open favorites ›</button></div>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <p>Qurated is a Harvard Undergraduate Association project. It is not an official Harvard University service. Ratings come from Harvard Q reports and describe past offerings. Always confirm meeting times, requirements and availability on my.harvard.</p>
+    </footer>
+  </div>
+
+  <!-- ===== Conversation ===== -->
+  <main id="main">
+    <section class="thread" id="thread" aria-live="polite"></section>
+  </main>
+
+  <div class="composer-wrap" id="composer-wrap">
+    <form class="composer" id="composer">
+      <button type="button" class="seg" id="seg-workload" aria-haspopup="true">
+        <span id="seg-workload-label">Any workload</span>
+        <svg viewBox="0 0 24 24" class="chev"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <input id="input" autocomplete="off" placeholder="What do you want to learn this semester?" aria-label="Ask Qurated">
+      <button type="button" class="iconbtn plain" id="open-prefs" title="Preferences" aria-label="Preferences">
+        <svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+      </button>
+      <button type="submit" class="ask" id="ask" aria-label="Ask">
+        <svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+      </button>
+    </form>
+  </div>
+  <div class="menu" id="workload-menu" hidden>
+    <button data-w="">Any workload</button>
+    <button data-w="4">Light · under 4 hrs/wk</button>
+    <button data-w="7">Moderate · under 7 hrs/wk</button>
+    <button data-w="10">Under 10 hrs/wk</button>
+  </div>
+
+  <!-- Preferences sheet -->
+  <div class="scrim" id="scrim" hidden></div>
+  <aside class="sheet" id="prefs" hidden aria-label="Preferences">
+    <header><h2>Your preferences</h2><button class="iconbtn plain close" data-close>✕</button></header>
+    <p class="hint">Qurated keeps these in mind for every question. They're saved to your account.</p>
+    <label>Concentration (or intended)<input name="concentration" placeholder="e.g. Computer Science"></label>
+    <label>Year<select name="year"><option value="">—</option><option>First-year</option><option>Sophomore</option><option>Junior</option><option>Senior</option></select></label>
+    <label>Interests<textarea name="interests" rows="2" placeholder="e.g. AI ethics, film, climate policy"></textarea></label>
+    <label>Requirements I need to fill<input name="requirements" placeholder="e.g. Gen Ed: Ethics & Civics, QRD"></label>
+    <label>Max workload <span class="val" id="wl-val">no limit</span>
+      <input type="range" name="max_workload_hrs" min="0" max="20" step="1" value="0"></label>
+    <label>Teaching style I like<input name="style" placeholder="e.g. small seminars, project-based, no exams"></label>
+    <label>Avoid<input name="avoid" placeholder="e.g. 9am classes, heavy problem sets"></label>
+    <button type="button" class="pill pill-soft full" id="prefs-taken">Courses I've taken…</button>
+    <button class="pill pill-fill full" data-close>Save</button>
+  </aside>
+
+  <!-- Courses taken -->
+  <aside class="sheet right" id="taken" hidden aria-label="Courses I've taken">
+    <header><h2>Courses I've taken</h2><button class="iconbtn plain close" data-close>✕</button></header>
+    <p class="hint">Qurated won't recommend these. Saved to your account.</p>
+    <div class="taken-search">
+      <input id="taken-input" autocomplete="off" placeholder="Search by code or title, e.g. COMPSCI 50" aria-label="Add a course you've taken">
+      <div class="suggest" id="taken-suggest" hidden></div>
+    </div>
+    <div class="chips-list" id="taken-list"></div>
+  </aside>
+
+  <!-- Favorites drawer -->
+  <aside class="sheet right" id="favs" hidden aria-label="Favorites">
+    <header><h2>Favorites</h2><button class="iconbtn plain close" data-close>✕</button></header>
+    <div id="fav-list"></div>
+    <button class="pill pill-soft full" id="compare-favs">Ask Qurated to compare these</button>
+  </aside>
+
+  <!-- Feedback -->
+  <div class="modal" id="feedback" hidden role="dialog" aria-modal="true" aria-labelledby="fb-title">
+    <form class="modal-card fb-card" id="feedback-form">
+      <button type="button" class="iconbtn plain close" data-close>✕</button>
+      <h2 id="fb-title">Send feedback</h2>
+      <p class="meta">Tell us what's working, what's broken, or what you wish Qurated could do.</p>
+      <div class="fb-kinds" role="radiogroup" aria-label="Feedback type">
+        <label><input type="radio" name="kind" value="idea" checked><span>Idea</span></label>
+        <label><input type="radio" name="kind" value="bug"><span>Something's broken</span></label>
+        <label><input type="radio" name="kind" value="other"><span>Other</span></label>
+      </div>
+      <textarea id="fb-message" rows="5" maxlength="3000" placeholder="Your feedback…" required></textarea>
+      <label class="fb-email"><input type="checkbox" id="fb-include-email"> Include my email so you can follow up</label>
+      <p class="fb-status" id="fb-status" hidden></p>
+      <button type="submit" class="pill pill-fill" id="fb-send">Send</button>
+    </form>
+  </div>
+
+  <!-- Course detail -->
+  <div class="modal" id="detail" hidden role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <button class="iconbtn plain close" data-close>✕</button>
+      <div id="detail-body"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=13"></script>
+</body>
+</html>
