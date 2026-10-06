@@ -141,6 +141,9 @@ Local-only, gitignored folders: `qscrape/data/` (scraped data), `app/data/` (tag
 feedback), `.env`, and `.browser-profile/` (your saved HarvardKey session).
 
 ## Operating notes
+See **[docs/MAINTENANCE.md](docs/MAINTENANCE.md)** for the full maintenance and scaling plan: roles, the per-term
+refresh runbook, cost model, usage limits, and the path to official data access.
+
 - **Costs:** about 1¢ per answer (Claude Sonnet 5.5) plus about 0.04¢ for the occasional Haiku pre-check. Cost is logged on the server, never shown to students. Set a monthly spend limit in the Anthropic Console as well.
 - **Feedback:** students send it from the speech-bubble button. Read it with `cat app/data/feedback.jsonl`. Emails are only saved if the student opts in.
 - **Back up** `app/data/` (student accounts) if you move machines.

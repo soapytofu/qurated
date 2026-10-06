@@ -18,6 +18,22 @@ TERM_ORDER = {"Spring": 0, "Fall": 1}  # Fall comes after Spring within a calend
 
 NOT_A_CLASS = re.compile(r"\b(tutorial|supervised|reading and research|directed (reading|research|writing)|"
                          r"independent (study|research)|dissertation|thesis|senior project)\b", re.I)
+NON_CLASS_COMPONENTS = {"Reading and Research", "Tutorial", "Thesis Research", "Doctoral Dissertation"}
+GEN_EDS = ["Aesthetics and Culture", "Ethics and Civics", "Histories, Societies, Individuals",
+           "Science and Technology in Society"]
+DIVISIONS = ["Arts and Humanities", "Social Sciences", "Science & Engineering & Applied Science"]
+DAY_CODES = ["M", "T", "W", "Th", "F"]
+TIME_START = re.compile(r"^(\d{1,2}):(\d{2})(am|pm)", re.I)
+
+
+def start_minutes(t):
+    m = TIME_START.match(t or "")
+    if not m:
+        return None
+    h, mi, ap = int(m.group(1)), int(m.group(2)), m.group(3).lower()
+    return (h % 12 + (12 if ap == "pm" else 0)) * 60 + mi
+
+
 STOPWORDS = set("""a an and are as at be but by for from has have i if in into is it its of on or
 so that the their there this to was were will with you your class course courses really very
 classes want need looking look something some any me my good best take taking like would should could can
@@ -209,9 +225,105 @@ class CourseDB:
 
     @staticmethod
     def is_undergrad_class(c):
-        """Excludes grad-only courses and tutorial/thesis listings (for first-pass retrieval)."""
-        level = ((c.get("catalog") or {}).get("level") or "").lower()
-        return "primarily for graduate" not in level and not NOT_A_CLASS.search(c["title"])
+        """Excludes graduate-level courses and research/tutorial/thesis listings."""
+        cat = c.get("catalog") or {}
+        level = (cat.get("level") or "").lower()
+        if "primarily for graduate" in level or level == "graduate course":
+            return False
+        if (cat.get("component") or "") in NON_CLASS_COMPONENTS:
+            return False
+        return not NOT_A_CLASS.search(c["title"])
+
+    # ---------------------------------------------------------------- structured filters
+    # Keys (all optional): term, subject, min_overall, max_workload, min_recommend, gen_ed, divisional, qrd,
+    # avoid_days [..], earliest_start (minutes), small_class, has_reviews, grading ("letter"|"satisfactory"),
+    # format ("Lecture"|"Seminar"), include_grad
+    def _term_sections(self, c, term):
+        offered = (c.get("catalog") or {}).get("offered", [])
+        return [s for o in offered if not term or o["term"] == term for s in o["sections"]]
+
+    def matches(self, c, f):
+        f = f or {}
+        cat = c.get("catalog") or {}
+        o = self._q(c)
+        if not f.get("include_grad") and not self.is_undergrad_class(c):
+            return False
+        term = f.get("term")
+        if term and not any(x["term"] == term for x in cat.get("offered", [])):
+            return False
+        if f.get("subject") and c["code"].split()[0] != f["subject"] and \
+                not any(x.split()[0] == f["subject"] for x in c["also_listed_as"]):
+            return False
+        for key, field, cmp in (("min_overall", "course_overall", "ge"), ("min_recommend", "recommend_mean", "ge"),
+                                ("max_workload", "workload_hrs_mean", "le")):
+            if f.get(key):
+                v = o.get(field)
+                if v is None or (v < f[key] if cmp == "ge" else v > f[key]):
+                    return False
+        if f.get("has_reviews") and not c["offerings"]:
+            return False
+        if f.get("gen_ed") and f["gen_ed"] not in (cat.get("gen_ed") or ""):
+            return False
+        if f.get("divisional") and f["divisional"] not in (cat.get("divisional") or ""):
+            return False
+        if f.get("qrd") and cat.get("qrd") != "Yes":
+            return False
+        if f.get("small_class") and not (cat.get("enrollment_cap") and cat["enrollment_cap"] <= 20):
+            return False
+        if f.get("grading"):
+            g = (cat.get("grading") or "").lower()
+            if (f["grading"] == "letter") != ("letter" in g):
+                return False
+        if f.get("format") and cat.get("component") != f["format"]:
+            return False
+        avoid, earliest = set(f.get("avoid_days") or []), f.get("earliest_start")
+        if avoid or earliest:
+            # Keep the course if at least one section (in the chosen term) fits the schedule constraints.
+            def fits(sec):
+                ms = [m for m in sec.get("meetings", []) if m.get("days")]
+                if not ms:
+                    return False  # time TBA: can't confirm it fits
+                return all(not (set(m["days"]) & avoid) and
+                           (not earliest or (start_minutes(m.get("time")) or 0) >= earliest) for m in ms)
+            if not any(fits(sec) for sec in self._term_sections(c, term)):
+                return False
+        return True
+
+    def browse(self, f=None, query="", sort="rating", offset=0, limit=24, exclude=frozenset()):
+        """Direct search, no LLM: every course matching the filters, ranked by `sort` (or by keyword relevance)."""
+        q_tokens = tokenize(query)
+        rows = []
+        for code, c in self.courses.items():
+            if exclude and self.is_taken(code, exclude):
+                continue
+            if not self.matches(c, f):
+                continue
+            rel = self._bm25(code, q_tokens) if q_tokens else 0.0
+            if q_tokens and rel == 0:
+                continue
+            o = self._q(c)
+            n = o.get("responded") or 0
+            # Shrink small-sample ratings toward the FAS average so 5.0-from-3-students doesn't top the list.
+            bayes = ((o.get("course_overall") or 0) * n + 4.25 * 8) / (n + 8) if o.get("course_overall") else 0
+            key = {"rating": -bayes,
+                   "workload": o.get("workload_hrs_mean") if o.get("workload_hrs_mean") is not None else 99,
+                   "recommend": -(o.get("recommend_mean") or 0),
+                   "reviews": -n,
+                   "code": 0}.get(sort, -bayes)
+            rows.append(((-rel if q_tokens and sort == "relevance" else key), code))
+        rows.sort()
+        return {"total": len(rows), "cards": [self.card(code) for _, code in rows[offset:offset + limit]]}
+
+    def facets(self):
+        subjects = {}
+        for c in self.courses.values():
+            if not self.is_undergrad_class(c):
+                continue
+            sub = c["code"].split()[0]
+            name, n = subjects.get(sub, (c["dept"] or sub, 0))
+            subjects[sub] = (name, n + 1)
+        return {"subjects": [{"code": k, "name": v[0], "count": v[1]} for k, v in sorted(subjects.items())],
+                "terms": list(UPCOMING), "gen_eds": GEN_EDS, "divisions": DIVISIONS, "days": DAY_CODES}
 
     def is_taken(self, code, taken):
         """True if the course, or any code it's cross-listed as, is in the student's taken set."""
@@ -221,13 +333,15 @@ class CourseDB:
         return code in taken or bool(c and set(c["also_listed_as"]) & set(taken))
 
     def search(self, query="", dept=None, max_workload=None, min_overall=None, min_recommend=None,
-               term=None, limit=12, exclude=frozenset(), undergrad=False):
+               term=None, limit=12, exclude=frozenset(), undergrad=False, filters=None):
         q_tokens = tokenize(query)
         results = []
         for code, c in self.courses.items():
             if exclude and self.is_taken(code, exclude):
                 continue
             if undergrad and not self.is_undergrad_class(c):
+                continue
+            if filters and not self.matches(c, filters):
                 continue
             o = self._q(c)
             if dept and dept.lower() not in (c["dept"] + " " + code + " " + " ".join(c["also_listed_as"])).lower():
@@ -272,7 +386,7 @@ class CourseDB:
             "offered": [x["term"] for x in cat.get("offered", []) if x["term"] in UPCOMING] or "not in Fall 2026 / Spring 2027 catalog",
             "next_meets": f"{term}: {self._meets(sec)}" if term else None,
             "gen_ed": cat.get("gen_ed"),
-            "divisional": cat.get("divisional"),
+            "divisional": cat.get("divisional") if cat.get("divisional") != "None" else None,
             "level": cat.get("level"),
             "description": (cat.get("description") or "")[:200] or None,
             "no_q_data": not c["offerings"],

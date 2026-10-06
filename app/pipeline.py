@@ -40,11 +40,16 @@ courses whose gen_ed is set. Never pick courses the student has already taken. E
 words, specific to the request. quote: a short excerpt copied exactly from that course's student_comments, or "".
 - advice: 1-2 short sentences, max 40 words total (never empty). Name the best pick and why, citing one number \
 (rating, hours/week or respondents) or a meeting time; if it matters, flag a small sample or a course with no Q \
-reviews. If nothing fits, say so and suggest how to rephrase. Ratings are 1-5; FAS average ~4.3."""
+reviews. If nothing fits, say so and suggest how to rephrase. Ratings are 1-5; FAS average ~4.3.
+- All Q reviews predate Harvard's new grading policy capping A grades (approved May 2026; faculty asked to follow \
+it from Fall 2026). If the student asks about grades, an "easy A" or grading leniency, say that past reviews may not \
+reflect grading now."""
 
 CHAT_SYSTEM = """You are Qurated, the Harvard Undergraduate Association's course advisor. Answer briefly and \
 warmly (2-5 sentences) using the conversation so far. If the student needs new course suggestions, tell them to \
-ask for them directly."""
+ask for them directly. Harvard approved a cap on A grades in May 2026 (faculty asked to follow it from Fall 2026), \
+so Q reviews about grading predate it; mention this if grades come up. Details: \
+https://oue.fas.harvard.edu/faculty-resources/report-on-grading/"""
 
 CODE_RE = re.compile(r"\b[A-Za-z][A-Za-z-]{1,9}\s?\d{1,4}[A-Za-z]{0,3}\b")
 PICK_RE = re.compile(r'\{\s*"code"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"reason"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,'
@@ -90,14 +95,33 @@ def plan(db, message, preferences, history=()):
             "gen_ed": bool(re.search(r"\bgen ?eds?\b|general education", m))}
 
 
-def retrieve(db, p, taken=frozenset(), k=8):
+def describe_filters(f):
+    if not f:
+        return ""
+    names = {"term": "term", "subject": "subject", "min_overall": "overall rating ≥", "min_recommend": "recommend ≥",
+             "max_workload": "workload ≤ hrs/wk", "gen_ed": "Gen Ed", "divisional": "divisional", "qrd": "QRD",
+             "avoid_days": "no classes on", "earliest_start": "no class before (minutes after midnight)",
+             "small_class": "small class (cap ≤ 20)", "has_reviews": "has Q reviews", "grading": "grading",
+             "format": "format"}
+    return "Active filters (every candidate already satisfies these): " + "; ".join(
+        f"{names.get(k, k)} {v}" for k, v in f.items())
+
+
+def retrieve(db, p, taken=frozenset(), k=8, filters=None):
     dept = "GENED" if p["gen_ed"] else None
     # Over-fetch when a term filter will prune results afterwards (search ranks before the term check).
     limit = 40 if p["term"] in UPCOMING else 10
-    lists = [db.search(q, limit=limit, undergrad=True, exclude=taken, dept=dept,
+    filters = filters or {}
+    if filters.get("term"):
+        limit = 40
+    lists = [db.search(q, limit=limit, undergrad=True, exclude=taken, dept=dept, filters=filters,
                        max_workload=p["max_workload"] or None) for q in p["queries"]]
-    if p["max_workload"] and not any(lists):  # workload cap too strict: relax it
-        lists = [db.search(q, limit=limit, undergrad=True, exclude=taken, dept=dept) for q in p["queries"]]
+    if p["max_workload"] and not any(lists):  # text-implied workload cap too strict: relax it (filters still apply)
+        lists = [db.search(q, limit=limit, undergrad=True, exclude=taken, dept=dept, filters=filters)
+                 for q in p["queries"]]
+    if filters and p["queries"] and not any(lists):
+        # Keywords + filters found nothing: fall back to the best-rated courses that satisfy the filters.
+        lists = [[db.brief(c["code"]) for c in db.browse(filters, exclude=taken, limit=10)["cards"]]]
     seen, out = set(), []
     for lst in lists:
         for b in lst:
@@ -211,7 +235,8 @@ def context_line(preferences, favorites, taken):
     return "\n".join(parts)
 
 
-def stream_answer(client, db, history, message, preferences, favorites, taken, search, sse, card_for, verify_quote):
+def stream_answer(client, db, history, message, preferences, favorites, taken, search, sse, card_for, verify_quote,
+                  filters=None):
     """Yields SSE strings. `history` is a list of plain {"role","content"} turns for this chat (mutated)."""
     client = client.with_options(timeout=30.0, max_retries=1)  # hedging handles slow starts; this catches hard stalls
     t0 = time.perf_counter()
@@ -233,8 +258,11 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
 
     p = plan(db, message, preferences, history)
     yield sse({"type": "status", "text": "Searching courses"})
-    cands = retrieve(db, p, frozenset(taken))
+    if filters.get("term") if filters else False:
+        p["term"] = filters["term"]  # an explicit filter beats a term guessed from the wording
+    cands = retrieve(db, p, frozenset(taken), filters=filters)
     yield sse({"type": "status", "text": "Picking your best fits"})
+    ctx = "\n".join(x for x in (ctx, describe_filters(filters)) if x)
     content = (ctx + "\n\n" if ctx else "") + f"Request: {message}\n\nCandidates:\n{json.dumps(cands)}"
     valid = {c["code"] for c in cands}
     buf, sent, advice_sent, advice_text = "", 0, 0, ""

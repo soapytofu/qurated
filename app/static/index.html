@@ -6,36 +6,46 @@
   <title>Qurated · HUA Course Advisor</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=13">
+  <link rel="stylesheet" href="/static/styles.css?v=18">
 </head>
 <body>
   <nav class="globalnav">
     <div class="gn-inner">
       <a class="brand" href="/" aria-label="Qurated home"><span class="shield">Q</span><span class="wordmark">Qurated</span></a>
-      <div class="gn-links">
-        <button class="gn-link" id="nav-ask">Ask</button>
+      <div class="gn-links" role="navigation" aria-label="Main">
+        <button class="gn-link" id="nav-ask">Home</button>
+        <button class="gn-link" id="nav-browse">Browse courses</button>
         <button class="gn-link" id="nav-favs">Favorites</button>
         <button class="gn-link" id="nav-how">How it works</button>
       </div>
       <div class="gn-icons">
-        <button class="iconbtn" id="new-chat" title="New conversation" aria-label="New conversation">
-          <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        <button class="navbtn" id="new-chat" title="Start a new conversation" aria-label="New chat">
+          <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span>New chat</span>
         </button>
-        <button class="iconbtn" id="open-feedback" title="Send feedback" aria-label="Send feedback">
-          <svg viewBox="0 0 24 24"><path d="M5 5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-8l-4 3v-3H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/></svg>
+        <button class="navbtn" id="open-feedback" title="Send feedback to the HUA team" aria-label="Send feedback">
+          <svg viewBox="0 0 24 24"><path d="M5 5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-8l-4 3v-3H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/></svg><span>Feedback</span>
         </button>
-        <button class="iconbtn" id="open-favs" title="Favorites" aria-label="Favorites">
+        <button class="iconbtn" id="open-favs" title="Your favorites" aria-label="Favorites">
           <svg viewBox="0 0 24 24"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/></svg>
           <span class="badge" id="fav-count" hidden>0</span>
         </button>
-        <button class="avatar-btn" id="account" aria-haspopup="true" aria-label="Account"><span id="me-initials">·</span></button>
+        <button class="avatar-btn" id="account" aria-haspopup="true" aria-label="Your account" title="Your account"><span id="me-initials">·</span></button>
       </div>
     </div>
   </nav>
+  <div class="notice" id="grading-notice" role="note">
+    <p><b>Heads up:</b> these Q reviews (Fall 2025 and Spring 2026) were written before Harvard's new grading policy,
+      which caps A grades. Comments about grading or "easy A's" may not reflect how courses are graded now.
+      <a href="https://oue.fas.harvard.edu/faculty-resources/report-on-grading/" target="_blank" rel="noopener">Read the Report on Grading ›</a></p>
+    <button class="notice-close" id="grading-notice-close" aria-label="Hide this notice">✕</button>
+  </div>
+
   <div class="menu account-menu" id="account-menu" hidden>
     <div class="acct-name" id="me-name"></div>
     <div class="acct-email" id="me-email"></div>
     <div class="acct-quota" id="me-quota"></div>
+    <button id="menu-prefs">Preferences</button>
+    <button id="menu-favs">Favorites</button>
     <button id="open-taken">Courses I've taken</button>
     <button id="logout">Sign out</button>
   </div>
@@ -48,6 +58,7 @@
       <p class="tagline" id="hero-sub">Ask in plain English. Answers come straight from past students' Q reports.</p>
       <div class="cta-row">
         <button class="pill pill-fill" id="cta-ask">Ask a question</button>
+        <button class="pill pill-ghost" id="cta-browse">Browse with filters</button>
         <button class="pill pill-ghost" id="cta-prefs">Set preferences</button>
       </div>
     </section>
@@ -90,25 +101,52 @@
 
   <div class="composer-wrap" id="composer-wrap">
     <form class="composer" id="composer">
-      <button type="button" class="seg" id="seg-workload" aria-haspopup="true">
-        <span id="seg-workload-label">Any workload</span>
-        <svg viewBox="0 0 24 24" class="chev"><path d="M6 9l6 6 6-6"/></svg>
+      <button type="button" class="seg" id="open-filters" aria-controls="filters" aria-expanded="false">
+        <svg viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
+        <span>Filters</span><span class="fcount" id="filter-count" hidden>0</span>
       </button>
       <input id="input" autocomplete="off" placeholder="What do you want to learn this semester?" aria-label="Ask Qurated">
-      <button type="button" class="iconbtn plain" id="open-prefs" title="Preferences" aria-label="Preferences">
-        <svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+      <button type="button" class="seg seg-right" id="open-prefs" title="Your preferences (concentration, interests, workload)" aria-label="Preferences">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/></svg><span>Preferences</span>
       </button>
-      <button type="submit" class="ask" id="ask" aria-label="Ask">
+      <button type="submit" class="ask" id="ask" aria-label="Ask" title="Ask">
         <svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
       </button>
     </form>
   </div>
-  <div class="menu" id="workload-menu" hidden>
-    <button data-w="">Any workload</button>
-    <button data-w="4">Light · under 4 hrs/wk</button>
-    <button data-w="7">Moderate · under 7 hrs/wk</button>
-    <button data-w="10">Under 10 hrs/wk</button>
-  </div>
+  <!-- Filters: direct search + hard constraints for the chatbot -->
+  <aside class="filters" id="filters" hidden aria-label="Filters">
+    <header>
+      <h2>Filters</h2>
+      <div><button type="button" class="link-btn" id="f-reset">Reset</button>
+        <button type="button" class="iconbtn plain" id="f-close" aria-label="Close filters">✕</button></div>
+    </header>
+    <label class="f-field">Keywords <input id="f-query" placeholder="optional, e.g. machine learning" autocomplete="off"></label>
+    <div class="f-field"><span>Term</span>
+      <div class="segctl" data-key="term"><button data-v="">Any</button><button data-v="2026 Fall">Fall 2026</button><button data-v="2027 Spring">Spring 2027</button></div></div>
+    <label class="f-field">Subject <select id="f-subject"><option value="">All subjects</option></select></label>
+    <div class="f-field"><span>Overall rating</span>
+      <div class="segctl" data-key="min_overall"><button data-v="">Any</button><button data-v="3.5">3.5+</button><button data-v="4">4.0+</button><button data-v="4.5">4.5+</button></div></div>
+    <label class="f-field">Max workload <span class="val" id="f-wl-val">any</span>
+      <input type="range" id="f-workload" min="0" max="15" step="1" value="0"></label>
+    <label class="f-field">Gen Ed <select id="f-gen_ed"><option value="">Any</option></select></label>
+    <label class="f-field">Divisional distribution <select id="f-divisional"><option value="">Any</option></select></label>
+    <div class="f-field"><span>Format</span>
+      <div class="segctl" data-key="format"><button data-v="">Any</button><button data-v="Lecture">Lecture</button><button data-v="Seminar">Seminar</button></div></div>
+    <div class="f-field"><span>Grading</span>
+      <div class="segctl" data-key="grading"><button data-v="">Any</button><button data-v="letter">Letter</button><button data-v="satisfactory">Sat/Unsat</button></div></div>
+    <div class="f-field"><span>Avoid days</span>
+      <div class="daychips" id="f-days"><button data-v="M">M</button><button data-v="T">T</button><button data-v="W">W</button><button data-v="Th">Th</button><button data-v="F">F</button></div></div>
+    <label class="f-field">No classes before
+      <select id="f-earliest"><option value="">Any time</option><option value="540">9:00am</option><option value="600">10:00am</option><option value="660">11:00am</option><option value="720">12:00pm</option></select></label>
+    <div class="f-toggles">
+      <label><input type="checkbox" id="f-qrd"> QRD only</label>
+      <label><input type="checkbox" id="f-small_class"> Small classes (cap ≤ 20)</label>
+      <label><input type="checkbox" id="f-has_reviews"> Has Q reviews</label>
+    </div>
+    <button type="button" class="pill pill-fill full" id="f-show">Show courses</button>
+    <p class="hint">Filters also apply to Qurated's recommendations in the chat.</p>
+  </aside>
 
   <!-- Preferences sheet -->
   <div class="scrim" id="scrim" hidden></div>
@@ -171,6 +209,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=13"></script>
+  <script src="/static/app.js?v=18"></script>
 </body>
 </html>

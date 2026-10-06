@@ -378,7 +378,7 @@ def chat_stream(session_id, message, preferences, favorites, taken=(), use_prefe
 fast_sessions: dict[tuple, list] = {}  # (email, session id) -> plain-text turns for the fast pipeline
 
 
-def fast_chat_stream(session_key, message, preferences, favorites, taken=()):
+def fast_chat_stream(session_key, message, preferences, favorites, taken=(), filters=None):
     """Production path: router -> server-side retrieval -> one streamed Sonnet call (see pipeline.py)."""
     _maybe_reload()
     history = fast_sessions.setdefault(session_key, [])
@@ -390,7 +390,8 @@ def fast_chat_stream(session_key, message, preferences, favorites, taken=()):
     prior.append(message[:300])
     try:
         cost, secs = yield from pipeline.stream_answer(client, db, history, message, preferences, favorites,
-                                                       list(taken), search, sse, db.card, _verified_quote)
+                                                       list(taken), search, sse, db.card, _verified_quote,
+                                                       filters=filters)
         print(f"[usage] fast search={search} {secs:.1f}s ≈ ${cost + router_cost:.4f}", flush=True)
     except anthropic.AuthenticationError:
         yield sse({"type": "error", "text": "Missing or invalid ANTHROPIC_API_KEY. Add it to app/.env and restart."})
@@ -508,6 +509,70 @@ class ChatRequest(BaseModel):
     message: str
     preferences: dict | None = None
     favorites: list[str] = []
+    filters: dict | None = None
+
+
+def clean_filters(f):
+    """Whitelist + type-check filter values coming from the browser."""
+    f = f or {}
+    out = {}
+    if f.get("term") in ("2026 Fall", "2027 Spring"):
+        out["term"] = f["term"]
+    if isinstance(f.get("subject"), str) and re.fullmatch(r"[A-Z][A-Z-]{0,11}", f["subject"]):
+        out["subject"] = f["subject"]
+    for k, lo, hi in (("min_overall", 1, 5), ("min_recommend", 1, 5), ("max_workload", 1, 40)):
+        try:
+            v = float(f.get(k) or 0)
+            if lo <= v <= hi:
+                out[k] = v
+        except (TypeError, ValueError):
+            pass
+    if f.get("gen_ed") in ("Aesthetics and Culture", "Ethics and Civics", "Histories, Societies, Individuals",
+                           "Science and Technology in Society"):
+        out["gen_ed"] = f["gen_ed"]
+    if f.get("divisional") in ("Arts and Humanities", "Social Sciences", "Science & Engineering & Applied Science"):
+        out["divisional"] = f["divisional"]
+    if f.get("grading") in ("letter", "satisfactory"):
+        out["grading"] = f["grading"]
+    if f.get("format") in ("Lecture", "Seminar"):
+        out["format"] = f["format"]
+    days = [d for d in (f.get("avoid_days") or []) if d in ("M", "T", "W", "Th", "F")]
+    if days:
+        out["avoid_days"] = days
+    try:
+        es = int(f.get("earliest_start") or 0)
+        if 0 < es < 24 * 60:
+            out["earliest_start"] = es
+    except (TypeError, ValueError):
+        pass
+    for k in ("qrd", "small_class", "has_reviews"):
+        if f.get(k) is True:
+            out[k] = True
+    return out
+
+
+class BrowseRequest(BaseModel):
+    filters: dict | None = None
+    query: str = ""
+    sort: str = "rating"
+    offset: int = 0
+
+
+@app.get("/api/facets")
+def facets(user=Depends(current_user)):
+    _maybe_reload()
+    return db.facets()
+
+
+@app.post("/api/browse")
+def browse(req: BrowseRequest, user=Depends(current_user)):
+    """Direct structured search (no LLM): instant, free, and exactly what the filters say."""
+    _maybe_reload()
+    sort = req.sort if req.sort in ("rating", "workload", "recommend", "reviews", "relevance") else "rating"
+    if sort == "relevance" and not req.query.strip():
+        sort = "rating"
+    return db.browse(clean_filters(req.filters), query=req.query[:200], sort=sort,
+                     offset=max(0, min(req.offset, 5000)), limit=24, exclude=frozenset(store.taken(user["email"])))
 
 
 @app.post("/api/chat")
@@ -521,7 +586,8 @@ def chat(req: ChatRequest, user=Depends(current_user)):
     prefs = store.prefs(email) or (req.preferences or {})
     favs = [f["code"] for f in store.favorites(email)][:30]
     taken = store.taken(email)
-    return StreamingResponse(fast_chat_stream((email, sid), req.message[:2000], prefs, favs, taken),
+    return StreamingResponse(fast_chat_stream((email, sid), req.message[:2000], prefs, favs, taken,
+                                              clean_filters(req.filters)),
                              media_type="text/event-stream", headers={"X-Session-Id": sid})
 
 
@@ -601,6 +667,16 @@ def set_prefs(prefs: dict, user=Depends(current_user)):
 def suggest(q: str = "", user=Depends(current_user)):
     _maybe_reload()
     return db.suggest(q)
+
+
+@app.middleware("http")
+async def revalidate_static(request: Request, call_next):
+    """Make browsers re-check static files on each load (cheap 304s), so an old cached app.js can never run
+    against a newer page and break buttons."""
+    response = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
