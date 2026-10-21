@@ -11,6 +11,7 @@ import threading
 import time
 
 from courses import UPCOMING
+from guardrails import POLICY, SAFE_FAILURE, validate_answer
 
 ANSWER_MODEL = "claude-sonnet-5-5"
 MAX_CARDS = 3
@@ -185,48 +186,63 @@ def hedged_stream(client, kwargs, hedge_after=HEDGE_AFTER):
 
     API first-token latency occasionally spikes to 15-20s; a second request usually starts in ~1s.
     Yields ("text", delta) items and finally ("final", message)."""
-    q = queue.Queue()
-    cancelled = set()
+    q = queue.Queue(maxsize=64)
+    cancelled = [threading.Event(), threading.Event()]
+
+    def publish(i, kind, payload):
+        while not cancelled[i].is_set():
+            try:
+                q.put((i, kind, payload), timeout=0.1)
+                return
+            except queue.Full:
+                pass
 
     def worker(i):
         try:
             with client.messages.stream(**kwargs) as stream:
                 for ev in stream:
-                    if i in cancelled:
+                    if cancelled[i].is_set():
                         return
                     if ev.type == "content_block_delta" and ev.delta.type == "text_delta":
-                        q.put((i, "text", ev.delta.text))
-                q.put((i, "final", stream.get_final_message()))
-        except Exception as e:  # noqa: BLE001 - surfaced to the caller below
-            q.put((i, "error", e))
+                        publish(i, "text", ev.delta.text)
+                publish(i, "final", stream.get_final_message())
+        except Exception as e:
+            publish(i, "error", e)
 
     threading.Thread(target=worker, args=(0,), daemon=True).start()
     started, winner, errors = 1, None, []
     deadline = time.monotonic() + hedge_after
-    while True:
-        timeout = max(deadline - time.monotonic(), 0.05) if (winner is None and started == 1) else 60
-        try:
-            i, kind, payload = q.get(timeout=timeout)
-        except queue.Empty:
-            if winner is None and started == 1:
-                print("[hedge] no first token yet; firing backup request", flush=True)
-                threading.Thread(target=worker, args=(1,), daemon=True).start()
-                started = 2
+    overall_deadline = time.monotonic() + 60
+    try:
+        while True:
+            remaining = overall_deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("answer deadline exceeded")
+            timeout = min(remaining, max(deadline - time.monotonic(), 0.05)) if winner is None and started == 1 else remaining
+            try:
+                i, kind, payload = q.get(timeout=timeout)
+            except queue.Empty:
+                if winner is None and started == 1:
+                    threading.Thread(target=worker, args=(1,), daemon=True).start()
+                    started = 2
+                    continue
+                raise TimeoutError("model stream stalled")
+            if winner is not None and i != winner:
                 continue
-            raise TimeoutError("model stream stalled")
-        if kind == "error":
-            errors.append(payload)
-            if winner == i or len(errors) >= started:
-                raise payload
-            continue
-        if winner is None:
-            winner = i
-            cancelled.add(1 - i)  # stop reading the loser
-        if i != winner:
-            continue
-        yield kind, payload
-        if kind == "final":
-            return
+            if kind == "error":
+                errors.append(payload)
+                if winner == i or len(errors) >= started:
+                    raise payload
+                continue
+            if winner is None:
+                winner = i
+                cancelled[1 - i].set()
+            yield kind, payload
+            if kind == "final":
+                return
+    finally:
+        for event in cancelled:
+            event.set()
 
 
 def context_line(preferences, favorites, taken):
@@ -243,74 +259,54 @@ def context_line(preferences, favorites, taken):
 
 def stream_answer(client, db, history, message, preferences, favorites, taken, search, sse, card_for, verify_quote,
                   filters=None):
-    """Yields SSE strings. `history` is a list of plain {"role","content"} turns for this chat (mutated)."""
-    client = client.with_options(timeout=30.0, max_retries=1)  # hedging handles slow starts; this catches hard stalls
+    """Buffer and validate model output before emitting cards or prose to the browser."""
+    client = client.with_options(timeout=30.0, max_retries=1)
     t0 = time.perf_counter()
-    ctx = context_line(preferences, favorites, taken)
-    convo = history[-6:]  # last 3 exchanges are plenty for follow-ups
-    if not search:
-        content = (ctx + "\n\n" if ctx else "") + message
-        text = ""
-        for kind, payload in hedged_stream(client, dict(
-                model=ANSWER_MODEL, max_tokens=1500, system=CHAT_SYSTEM, thinking={"type": "between_tools"},
-                output_config={"effort": "low"}, messages=convo + [{"role": "user", "content": content}])):
+    p, cands = None, []
+    if search:
+        p = plan(db, message, preferences, history)
+        yield sse({"type": "status", "text": "Searching courses"})
+        if filters and filters.get("term"):
+            p["term"] = filters["term"]
+        cands = retrieve(db, p, frozenset(taken), filters=filters)
+    yield sse({"type": "status", "text": "Preparing a grounded answer"})
+    # Structured data keeps source text separate from trusted system instructions.
+    content = json.dumps({"request": message, "student_context": context_line(preferences, favorites, taken),
+                          "active_filters": filters or {}, "candidates": cands})
+    kwargs = dict(model=ANSWER_MODEL, max_tokens=2500,
+                  system=SYSTEM + POLICY + ("\nNo candidates: picks must be []." if not cands else ""),
+                  thinking={"type": "between_tools"},
+                  output_config={"effort": "low", "format": {"type": "json_schema", "schema": ANSWER_SCHEMA}},
+                  messages=history[-6:] + [{"role": "user", "content": content}])
+    buf, final = "", None
+    stream = hedged_stream(client, kwargs)
+    try:
+        for kind, payload in stream:
             if kind == "final":
                 final = payload
                 break
-            text += payload
-            yield sse({"type": "text", "delta": payload})
-        history += [{"role": "user", "content": message}, {"role": "assistant", "content": text}]
+            buf += payload
+            if len(buf) > 20000:
+                raise ValueError("answer exceeded output limit")
+    finally:
+        stream.close()
+    if final is None or final.stop_reason != "end_turn":
+        yield sse({"type": "error", "text": SAFE_FAILURE})
+        return _cost(final.usage) if final else 0, time.perf_counter() - t0
+    try:
+        picks, advice = validate_answer(json.loads(buf), cands, taken, db, verify_quote)
+    except (ValueError, TypeError, KeyError):
+        yield sse({"type": "error", "text": SAFE_FAILURE})
         return _cost(final.usage), time.perf_counter() - t0
-
-    p = plan(db, message, preferences, history)
-    yield sse({"type": "status", "text": "Searching courses"})
-    if filters.get("term") if filters else False:
-        p["term"] = filters["term"]  # an explicit filter beats a term guessed from the wording
-    cands = retrieve(db, p, frozenset(taken), filters=filters)
-    yield sse({"type": "status", "text": "Picking your best fits"})
-    ctx = "\n".join(x for x in (ctx, describe_filters(filters)) if x)
-    content = (ctx + "\n\n" if ctx else "") + f"Request: {message}\n\nCandidates:\n{json.dumps(cands)}"
-    valid = {c["code"] for c in cands}
-    buf, sent, advice_sent, advice_text = "", 0, 0, ""
-    picks = []
-    final = None
-    for kind, payload in hedged_stream(client, dict(
-            model=ANSWER_MODEL, max_tokens=2500, system=SYSTEM, thinking={"type": "between_tools"},
-            output_config={"effort": "low", "format": {"type": "json_schema", "schema": ANSWER_SCHEMA}},
-            messages=convo + [{"role": "user", "content": content}])):
-        if kind == "final":
-            final = payload
-            break
-        buf += payload
-        # Cards: emit each pick as soon as its JSON object closes.
-        matches = list(PICK_RE.finditer(buf))
-        for m in matches[sent:]:
-            code, reason, quote = (json.loads(f'"{g}"') for g in m.groups())
-            sent += 1
-            if len(picks) >= MAX_CARDS or code not in valid or db.is_taken(code, taken):
-                continue
-            card = card_for(code)
-            if card:
-                card["reason"], card["quote"] = reason, verify_quote(card["code"], quote)
-                picks.append(card["code"])
-                yield sse({"type": "card", "card": card})
-        # Advice: stream the string as it's generated.
-        a = ADVICE_START.search(buf)
-        if a:
-            advice_text, _ = _unescape_partial(buf[a.end():])
-            if len(advice_text) > advice_sent:
-                if advice_sent == 0:
-                    yield sse({"type": "status", "text": "Writing advice"})
-                yield sse({"type": "text", "delta": advice_text[advice_sent:]})
-                advice_sent = len(advice_text)
-    if final.stop_reason == "refusal":
-        yield sse({"type": "error", "text": "Sorry, I can't help with that one. Try asking about courses."})
-    elif not picks and not advice_text:
-        yield sse({"type": "error", "text": "I couldn't find a good match. Try describing the course differently."})
-    summary = advice_text + (f"\n(Recommended: {', '.join(picks)})" if picks else "")
-    if p["queries"] == [] and p["codes"]:  # follow-up: keep the whole set in play for the next "compare..."
-        summary += f"\n(Discussing: {', '.join(p['codes'])})"
-    history += [{"role": "user", "content": message}, {"role": "assistant", "content": summary or "(no answer)"}]
+    for pick in picks:
+        card = card_for(pick["code"])
+        if card:
+            yield sse({"type": "card", "card": {**card, "reason": pick["reason"], "quote": pick["quote"]}})
+    yield sse({"type": "text", "delta": advice})
+    summary = advice + ("\n(Recommended: " + ", ".join(x["code"] for x in picks) + ")" if picks else "")
+    if p and not p["queries"] and p["codes"]:
+        summary += "\n(Discussing: " + ", ".join(c["code"] for c in cands) + ")"
+    history += [{"role": "user", "content": message}, {"role": "assistant", "content": summary}]
     return _cost(final.usage), time.perf_counter() - t0
 
 
