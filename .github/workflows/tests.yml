@@ -18,3 +18,7 @@ jobs:
       - run: app/.venv/bin/python -m pytest tests -q
       - run: node --check app/static/app.js
       - run: node --test tests/frontend.test.cjs
+      - run: app/.venv/bin/python -m playwright install --with-deps chromium
+      - run: app/.venv/bin/python -m pytest tests/test_ui.py -q
+        env:
+          RUN_BROWSER_TESTS: '1'
