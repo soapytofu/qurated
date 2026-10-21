@@ -55,3 +55,15 @@ def test_displayed_meeting_and_model_context_match_filters():
 
 def test_unknown_meeting_cannot_confirm_schedule_fit():
     assert not CourseDB.section_fits({'meetings': [{'days': ['T']}, {'days': []}]}, {'avoid_days': ['M']})
+
+
+def test_more_options_searches_new_candidates():
+    from pipeline import plan
+    db = database()
+    history = [{'role': 'assistant', 'content': 'Here are some options.\n(Recommended: TEST 1, TEST 2)'}]
+    p = plan(db, 'Show me more options like these', {}, history)
+    results = retrieve(db, p)
+    assert p['queries'] and not p['codes']
+    assert results and not {'TEST 1', 'TEST 2'} & {c['code'] for c in results}
+    comparison = plan(db, 'Which of these has more workload?', {}, history)
+    assert comparison['codes'] == ['TEST 1', 'TEST 2']
