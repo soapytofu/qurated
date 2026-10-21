@@ -1,8 +1,7 @@
-"""Fast single-call answer pipeline (the "V9" winner in experiments/bench.py).
+"""Retrieve candidate courses, request structured JSON, then validate before displaying it.
 
-Retrieval happens on the server in milliseconds; one Sonnet call (thinking off) returns
-{picks, advice} as structured JSON, which we stream: each card is sent the moment its JSON
-object is complete, then the advice text streams word by word. Median ~5s end to end.
+Progress events stream immediately; generated cards and prose are released only after the
+complete answer passes deterministic checks. Rebenchmark latency after changing this flow.
 """
 import json
 import queue
@@ -14,7 +13,6 @@ from courses import UPCOMING
 from guardrails import POLICY, SAFE_FAILURE, validate_answer
 
 ANSWER_MODEL = "claude-sonnet-5-5"
-MAX_CARDS = 3
 PRICE = (2.0, 10.0)  # $/MTok in, out for ANSWER_MODEL (cost goes to the server log only)
 
 ANSWER_SCHEMA = {
@@ -46,16 +44,7 @@ reviews. If nothing fits, say so and suggest how to rephrase. Ratings are 1-5; F
 it from Fall 2026). If the student asks about grades, an "easy A" or grading leniency, say that past reviews may not \
 reflect grading now."""
 
-CHAT_SYSTEM = """You are Qurated, the Harvard Undergraduate Association's course advisor. Answer briefly and \
-warmly (2-5 sentences) using the conversation so far. If the student needs new course suggestions, tell them to \
-ask for them directly. Harvard approved a cap on A grades in May 2026 (faculty asked to follow it from Fall 2026), \
-so Q reviews about grading predate it; mention this if grades come up. Details: \
-https://oue.fas.harvard.edu/faculty-resources/report-on-grading/"""
-
 CODE_RE = re.compile(r"\b[A-Za-z][A-Za-z-]{1,9}\s?\d{1,4}[A-Za-z]{0,3}\b")
-PICK_RE = re.compile(r'\{\s*"code"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"reason"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,'
-                     r'\s*"quote"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}')
-ADVICE_START = re.compile(r'"advice"\s*:\s*"')
 REFERENT = re.compile(r"\b(those|these|them|they|which one|of the (two|three|four)|between|compare|vs\.?|versus|"
                       r"the first|the second|the last|that one|either)\b", re.I)
 RECOMMENDED = re.compile(r"\(Recommended: ([^)]*)\)")
@@ -158,26 +147,6 @@ def retrieve(db, p, taken=frozenset(), k=8, filters=None):
     return enriched
 
 
-def _unescape_partial(s):
-    """Decode a JSON string body that may be cut off mid-stream; returns (text, finished)."""
-    out, i = [], 0
-    while i < len(s):
-        ch = s[i]
-        if ch == '"':
-            return "".join(out), True
-        if ch == "\\":
-            if i + 1 >= len(s):
-                break
-            nxt = s[i + 1]
-            if nxt == "u":
-                if i + 6 > len(s):
-                    break
-                out.append(chr(int(s[i + 2:i + 6], 16))); i += 6; continue
-            out.append({"n": "\n", "t": "\t", "r": "", "b": "", "f": ""}.get(nxt, nxt)); i += 2; continue
-        out.append(ch); i += 1
-    return "".join(out), False
-
-
 HEDGE_AFTER = 2.5  # seconds without a first token before we fire a backup request
 
 
@@ -277,7 +246,7 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
     content = json.dumps({"request": message, "student_context": context_line(preferences, favorites, taken),
                           "active_filters": filters or {}, "candidates": cands})
     kwargs = dict(model=ANSWER_MODEL, max_tokens=2500,
-                  system=SYSTEM + POLICY + ("\nNo candidates: picks must be []." if not cands else ""),
+                  system=SYSTEM + POLICY + ("\nNo candidates: picks must be []. Give brief general academic guidance or a greeting when appropriate; do not invent course facts." if not cands else ""),
                   thinking={"type": "between_tools"},
                   output_config={"effort": "low", "format": {"type": "json_schema", "schema": ANSWER_SCHEMA}},
                   messages=history[-6:] + [{"role": "user", "content": content}])
