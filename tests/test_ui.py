@@ -69,6 +69,7 @@ def test_replayable_guide_and_no_automatic_question(page):
     expect(page.locator('#quick-guide')).not_to_be_visible()
     expect(page.locator('#input')).to_have_value('Find a Spring 2027 Gen Ed about ethics with a manageable workload.')
     assert calls == []
+    assert page.evaluate("localStorage.getItem('qurated.guideSeen.v1')") == 'true'
     page.reload()
     expect(page.locator('#guide-welcome')).not_to_be_visible()
     page.locator('#nav-how').click()
