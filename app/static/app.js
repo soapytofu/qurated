@@ -110,7 +110,7 @@ function bindCards(root, cards) {
       if (e.target.closest(".taken-btn")) { toggleTaken(c.code, c.title); return; }
       openDetail(c.code);
     });
-    el.addEventListener("keydown", (e) => { if (e.key === "Enter") openDetail(c.code); });
+    el.addEventListener("keydown", (e) => { if (e.target === el && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openDetail(c.code); } });
   });
 }
 
@@ -211,6 +211,7 @@ async function send(message) {
   if (!message || busy) return;
   busy = true;
   $("#ask").disabled = true;
+  $("#new-chat").disabled = true;
   $("#input").value = "";
   showChat();
   addTurn("user", `<div class="bubble">${esc(message)}</div>`);
@@ -223,6 +224,7 @@ async function send(message) {
   scrollToEnd();
 
   try {
+    await flushPrefs();
     const res = await api("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -284,11 +286,12 @@ async function send(message) {
     }
     if (!completed) note("error", "The answer was interrupted. Please try again.");
   } catch (e) {
-    if (e.message !== "signed out") note("error", "Lost connection to the Qurated server. Is it running?");
+    if (e.message !== "signed out") note("error", e.message.includes("saved") ? e.message : "Connection interrupted. Please try again.");
   } finally {
     progress.finish();
     busy = false;
     $("#ask").disabled = false;
+    $("#new-chat").disabled = false;
     $("#input").focus();
     refreshMe();
   }
@@ -296,10 +299,10 @@ async function send(message) {
 
 $("#composer").addEventListener("submit", (e) => { e.preventDefault(); send($("#input").value); });
 $$(".try").forEach((b) => b.addEventListener("click", () => send(b.textContent.replace("›", ""))));
-$("#new-chat").addEventListener("click", () => { if (busy) return; sessionId = null; $("#thread").innerHTML = ""; showHome(); scrollTo({ top: 0 }); });
+$("#new-chat").addEventListener("click", () => { if (busy) return; closeAll(); toggleFilters(false); sessionId = null; $("#thread").innerHTML = ""; showHome(); scrollTo({ top: 0 }); });
 $("#nav-ask").addEventListener("click", () => { if (!document.body.classList.contains("chatting")) scrollTo({ top: 0, behavior: "smooth" }); $("#input").focus(); });
 $("#cta-ask").addEventListener("click", () => $("#input").focus());
-$("#nav-how").addEventListener("click", () => { showHome(); $("#how").scrollIntoView({ behavior: "smooth" }); });
+$("#nav-how").addEventListener("click", openGuide);
 
 // ---------- workload preference label (preferences sheet) ----------
 const menu = document.createElement("div");  // placeholder: the old workload quick menu was replaced by Filters
@@ -310,13 +313,45 @@ function syncWorkload() {
 }
 
 // ---------- sheets ----------
-function openSheet(id) { closeAll(); acctMenu.hidden = true; $("#scrim").hidden = false; $(id).hidden = false; }
-function closeAll() { ["#prefs", "#favs", "#detail", "#feedback", "#taken"].forEach((id) => ($(id).hidden = true)); $("#scrim").hidden = true; }
-$$("[data-close]").forEach((b) => b.addEventListener("click", closeAll));
-$("#scrim").addEventListener("click", closeAll);
-$("#detail").addEventListener("click", (e) => { if (e.target.id === "detail") closeAll(); });
-$("#feedback").addEventListener("click", (e) => { if (e.target.id === "feedback") closeAll(); });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeAll(); acctMenu.hidden = true; } });
+let activeOverlay = null, overlayReturn = null, inertElements = [];
+const focusable = (root) => $$('button:not([disabled]), input, select, textarea, a[href], [tabindex="0"]', root)
+  .filter(el => !el.hidden && el.getClientRects().length);
+function openOverlay(id, scrim = false) {
+  const trigger = document.activeElement;
+  closeAll(false);
+  toggleFilters(false);
+  acctMenu.hidden = true;
+  activeOverlay = $(id); overlayReturn = trigger;
+  activeOverlay.hidden = false;
+  activeOverlay.setAttribute("role", "dialog");
+  activeOverlay.setAttribute("aria-modal", "true");
+  $("#scrim").hidden = !scrim;
+  inertElements = [...document.body.children].filter(el => el !== activeOverlay && el.id !== "scrim" && !el.inert);
+  inertElements.forEach(el => el.inert = true);
+  document.body.classList.add("overlay-open");
+  focusable(activeOverlay)[0]?.focus();
+}
+function openSheet(id) { openOverlay(id, true); }
+function closeAll(restore = true) {
+  ["#prefs", "#favs", "#detail", "#feedback", "#taken"].forEach(id => $(id).hidden = true);
+  $("#scrim").hidden = true;
+  inertElements.forEach(el => el.inert = false); inertElements = [];
+  document.body.classList.remove("overlay-open");
+  activeOverlay = null;
+  if (restore && overlayReturn?.isConnected) overlayReturn.focus();
+  overlayReturn = null;
+}
+$$("[data-close]").forEach(b => b.addEventListener("click", () => closeAll()));
+$("#scrim").addEventListener("click", () => closeAll());
+["#detail", "#feedback"].forEach(id => $(id).addEventListener("click", e => { if (e.target === $(id)) closeAll(); }));
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") { closeAll(); toggleFilters(false); acctMenu.hidden = true; }
+  if (e.key === "Tab" && activeOverlay) {
+    const items = focusable(activeOverlay), first = items[0], last = items.at(-1);
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
+  }
+});
 document.addEventListener("click", (e) => {
   if (!menu.contains(e.target)) menu.hidden = true;
   if (!acctMenu.contains(e.target) && !e.target.closest("#account")) acctMenu.hidden = true;
@@ -325,14 +360,33 @@ document.addEventListener("click", (e) => {
 // preferences
 $("#open-prefs").addEventListener("click", () => openSheet("#prefs"));
 $("#cta-prefs").addEventListener("click", () => openSheet("#prefs"));
-let prefsTimer = null, prefsSave = Promise.resolve();
-function savePrefs() {  // debounced save to the account
+let prefsTimer = null, prefsSave = Promise.resolve(), prefsDirty = false;
+function savePrefs() {
+  prefsDirty = true;
+  $("#prefs-status").textContent = "Unsaved changes";
   clearTimeout(prefsTimer);
-  prefsTimer = setTimeout(() => {
-    const snapshot = { ...prefs };
-    prefsSave = prefsSave.then(() => putJSON("/api/account/prefs", snapshot)).catch(saveError);
-  }, 500);
+  prefsTimer = setTimeout(() => flushPrefs().catch(() => {}), 500);
 }
+async function flushPrefs() {
+  clearTimeout(prefsTimer);
+  if (prefsDirty) {
+    const snapshot = { ...prefs };
+    prefsDirty = false;
+    $("#prefs-status").textContent = "Saving…";
+    prefsSave = prefsSave.catch(() => {}).then(() => putJSON("/api/account/prefs", snapshot)).then(() => {
+      if (!prefsDirty) $("#prefs-status").textContent = "Saved to your account";
+    }).catch(err => {
+      prefsDirty = true;
+      $("#prefs-status").textContent = "Couldn't save. Use Save preferences to retry.";
+      throw err;
+    });
+  }
+  return prefsSave;
+}
+$("#prefs-save").addEventListener("click", async () => {
+  const button = $("#prefs-save"); button.disabled = true;
+  try { await flushPrefs(); closeAll(); } catch {} finally { button.disabled = false; }
+});
 function fillPrefs() {
   $$("#prefs [name]").forEach((el) => { if (prefs[el.name] != null && el.type !== "range") el.value = prefs[el.name]; });
   syncWorkload();
@@ -384,21 +438,29 @@ function renderTaken() {
   $$("#taken-list .chip-x button").forEach((b) => b.addEventListener("click", () => toggleTaken(b.parentElement.dataset.code)));
 }
 const tIn = $("#taken-input"), tSug = $("#taken-suggest");
-let sugTimer = null;
+let sugTimer = null, suggestionVersion = 0;
 tIn.addEventListener("input", () => {
   clearTimeout(sugTimer);
-  const q = tIn.value.trim();
+  const version = ++suggestionVersion, q = tIn.value.trim();
   if (q.length < 2) { tSug.hidden = true; return; }
   sugTimer = setTimeout(async () => {
-    const items = await api(`/api/courses/suggest?q=${enc(q)}`).then((r) => r.json()).catch(() => []);
-    tSug.innerHTML = items.length
-      ? items.map((i) => `<button data-code="${esc(i.code)}" data-title="${esc(i.title)}"${taken.has(i.code) ? " disabled" : ""}><b>${esc(i.code)}</b> ${esc(i.title)}${taken.has(i.code) ? " ✓" : ""}</button>`).join("")
-      : '<div class="none">No matching course</div>';
-    tSug.hidden = false;
-    $$("button", tSug).forEach((b) => b.addEventListener("click", () => {
-      toggleTaken(b.dataset.code, b.dataset.title);
-      tIn.value = ""; tSug.hidden = true; tIn.focus();
-    }));
+    try {
+      const response = await api(`/api/courses/suggest?q=${enc(q)}`);
+      if (!response.ok) throw new Error("suggest failed");
+      const items = await response.json();
+      if (version !== suggestionVersion) return;
+      tSug.innerHTML = items.length
+        ? items.map(i => `<button data-code="${esc(i.code)}" data-title="${esc(i.title)}"${taken.has(i.code) ? " disabled" : ""}><b>${esc(i.code)}</b> ${esc(i.title)}${taken.has(i.code) ? " ✓" : ""}</button>`).join("")
+        : '<div class="none">No matching course</div>';
+      tSug.hidden = false;
+      $$("button", tSug).forEach(b => b.addEventListener("click", () => {
+        toggleTaken(b.dataset.code, b.dataset.title);
+        suggestionVersion++; tIn.value = ""; tSug.hidden = true; tIn.focus();
+      }));
+    } catch {
+      if (version !== suggestionVersion) return;
+      tSug.innerHTML = '<div class="none">Couldn’t search. Change your search to retry.</div>'; tSug.hidden = false;
+    }
   }, 180);
 });
 tIn.addEventListener("keydown", (e) => {
@@ -409,7 +471,7 @@ $("#prefs-taken").addEventListener("click", openTaken);
 
 // ---------- load the student's saved account (with one-time move from this browser) ----------
 async function loadAccount() {
-  const acct = await api("/api/account").then((r) => r.json()).catch(() => null);
+  const acct = await api("/api/account").then(r => r.ok ? r.json() : null).catch(() => null);
   if (!acct) return;
   favorites = Object.fromEntries(acct.favorites.map((c) => [c.code, c]));
   taken = new Map(acct.taken.map((t) => [t.code, t.title]));
@@ -461,13 +523,21 @@ function catalogHTML(cat) {
     ${facts.length ? `<dl class="facts">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>` : ""}
     ${syllabus ? `<p><a class="link" href="${esc(syllabus)}" target="_blank" rel="noopener">View syllabus ›</a></p>` : ""}`;
 }
+let detailVersion = 0;
 async function openDetail(code) {
+  const version = ++detailVersion;
   $("#detail-body").innerHTML = '<p class="meta">Loading…</p>';
-  $("#scrim").hidden = true;
-  $("#detail").hidden = false;
-  const res = await api(`/api/course/${encodeURIComponent(code)}`);
-  if (!res.ok) { $("#detail-body").innerHTML = '<p class="meta">No Q data found.</p>'; return; }
-  const c = await res.json();
+  openOverlay("#detail");
+  let c;
+  try {
+    const res = await api(`/api/course/${encodeURIComponent(code)}`);
+    if (!res.ok) throw new Error("detail failed");
+    c = await res.json();
+  } catch {
+    if (version === detailVersion) $("#detail-body").innerHTML = '<p class="meta">Couldn’t load this course. Close this panel and open the card to retry.</p>';
+    return;
+  }
+  if (version !== detailVersion) return;
   $("#detail-body").innerHTML = `
     <div class="code">${esc(c.code)}${c.also_listed_as.length ? " · " + esc(c.also_listed_as.join(" · ")) : ""}</div>
     <h2>${esc(c.title)}</h2>
@@ -555,9 +625,8 @@ api("/api/meta").then((r) => r.json()).then((m) => {
 // ---------- feedback ----------
 const fbStatus = $("#fb-status");
 $("#open-feedback").addEventListener("click", () => {
-  closeAll(); acctMenu.hidden = true;
+  openOverlay("#feedback");
   fbStatus.hidden = true;
-  $("#feedback").hidden = false;
   $("#fb-message").focus();
 });
 $("#feedback-form").addEventListener("submit", async (e) => {
@@ -611,8 +680,8 @@ function filterSummary() {
 }
 function renderFilterControls() {
   $$(".segctl", fPanel).forEach((seg) => $$("button", seg).forEach((b) =>
-    b.classList.toggle("on", String(filters[seg.dataset.key] ?? "") === b.dataset.v)));
-  $$("#f-days button").forEach((b) => b.classList.toggle("on", (filters.avoid_days || []).includes(b.dataset.v)));
+    { const on = String(filters[seg.dataset.key] ?? "") === b.dataset.v; b.classList.toggle("on", on); b.setAttribute("aria-pressed", on); }));
+  $$("#f-days button").forEach(b => { const on = (filters.avoid_days || []).includes(b.dataset.v); b.classList.toggle("on", on); b.setAttribute("aria-pressed", on); });
   $("#f-subject").value = filters.subject || "";
   $("#f-gen_ed").value = filters.gen_ed || "";
   $("#f-divisional").value = filters.divisional || "";
@@ -622,18 +691,35 @@ function renderFilterControls() {
   ["qrd", "small_class", "has_reviews"].forEach((k) => ($(`#f-${k}`).checked = !!filters[k]));
   filterSummary();
 }
-let countTimer = null;
+let countTimer = null, countVersion = 0;
+async function browseRequest(state) {
+  const response = await api("/api/browse", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(state) });
+  if (!response.ok) throw new Error("Couldn't load courses. Please try again.");
+  return response.json();
+}
 function filtersChanged() {
   store.set("qurated.filters", filters);
   renderFilterControls();
   clearTimeout(countTimer);
-  countTimer = setTimeout(async () => {  // live "Show N courses" count (instant on the server)
-    const r = await api("/api/browse", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filters: activeFilters(), query: $("#f-query").value }) }).then((x) => x.json()).catch(() => null);
-    if (r) $("#f-show").textContent = r.total ? `Show ${r.total.toLocaleString()} course${r.total === 1 ? "" : "s"}` : "No matching courses";
-    $("#f-show").disabled = !r?.total;
+  const version = ++countVersion;
+  $("#f-show").textContent = "Checking courses…";
+  $("#f-show").disabled = true;
+  $("#browse-status").textContent = "";
+  countTimer = setTimeout(async () => {
+    try {
+      const r = await browseRequest({ filters:activeFilters(), query:$("#f-query").value });
+      if (version !== countVersion) return;
+      $("#f-show").textContent = r.total ? `Show ${r.total.toLocaleString()} course${r.total === 1 ? "" : "s"}` : "Show empty results";
+      $("#f-show").disabled = false;
+      $("#browse-status").textContent = r.total ? "" : "No matches. Try removing a filter or changing your keywords.";
+    } catch (err) {
+      if (version !== countVersion) return;
+      $("#f-show").textContent = "Retry search"; $("#f-show").disabled = false;
+      $("#browse-status").textContent = "Couldn't check courses. Try again.";
+    }
   }, 150);
 }
+
 $$(".segctl", fPanel).forEach((seg) => $$("button", seg).forEach((b) => b.addEventListener("click", () => {
   const v = b.dataset.v;
   filters[seg.dataset.key] = seg.dataset.key === "min_overall" && v ? Number(v) : v;
@@ -666,29 +752,47 @@ $("#f-close").addEventListener("click", () => toggleFilters(false));
 const SORTS = [["rating", "Best rated"], ["workload", "Lightest workload"], ["recommend", "Most recommended"], ["reviews", "Most reviewed"], ["relevance", "Keyword match"]];
 async function showResults(append = null) {
   const query = $("#f-query").value.trim();
-  const state = append || { sort: query ? "relevance" : "rating", offset: 0, query, filters: activeFilters() };
-  const res = await api("/api/browse", { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ filters: state.filters, query: state.query, sort: state.sort, offset: state.offset }) }).then((r) => r.json());
+  const state = append || { sort:query ? "relevance" : "rating", offset:0, query, filters:activeFilters() };
   let block = append?.block;
-  if (!block) {
-    showChat();
-    block = addTurn("bot results");
-    block.innerHTML = `<div class="results-head"><h2>${res.total.toLocaleString()} matching course${res.total === 1 ? "" : "s"}</h2>
-      <select aria-label="Sort">${SORTS.filter(([k]) => k !== "relevance" || state.query).map(([k, l]) => `<option value="${k}"${k === state.sort ? " selected" : ""}>${l}</option>`).join("")}</select></div>
-      <p class="results-sub">${esc(describeFilters(state))}</p><div class="cards"></div><button class="pill pill-soft more" hidden>Show more</button>`;
-    $("select", block).addEventListener("change", (e) => { block.remove(); showResults({ ...state, sort: e.target.value, offset: 0 }); });
+  if (block?.dataset.loading === "true") return;
+  if (block) { block.dataset.loading = "true"; $(".more", block).disabled = true; }
+  $("#f-show").disabled = true;
+  try {
+    const res = await browseRequest({ filters:state.filters, query:state.query, sort:state.sort, offset:state.offset });
+    if (!block) {
+      showChat(); block = addTurn("bot results");
+      block.innerHTML = `<div class="results-head"><h2>${res.total.toLocaleString()} matching course${res.total === 1 ? "" : "s"}</h2>
+        <select aria-label="Sort">${SORTS.filter(([k]) => k !== "relevance" || state.query).map(([k,l]) => `<option value="${k}"${k === state.sort ? " selected" : ""}>${l}</option>`).join("")}</select></div>
+        <p class="results-sub">${esc(describeFilters(state))}</p><div class="cards"></div><button class="pill pill-soft more" hidden>Show more</button><p class="hint result-status" role="status"></p>`;
+      if (!res.total) $(".result-status", block).textContent = "No courses match. Open Filters to remove a constraint or try different keywords.";
+      $("select", block).addEventListener("change", async e => {
+        const select = e.target; select.disabled = true;
+        const next = await showResults({ ...state, sort:select.value, offset:0, block:null });
+        if (next) block.remove(); else select.value = state.sort;
+        select.disabled = false;
+      });
+    }
+    const grid = $(".cards", block), tmp = document.createElement("div");
+    tmp.innerHTML = res.cards.map(cardHTML).join(""); bindCards(tmp, res.cards);
+    while (tmp.firstElementChild) grid.appendChild(tmp.firstElementChild);
+    const more = $(".more", block), shown = state.offset + res.cards.length;
+    more.hidden = shown >= res.total;
+    more.onclick = () => showResults({ ...state, offset:shown, block });
+    if (!append) block.scrollIntoView({ behavior:"smooth", block:"start" });
+    $("#browse-status").textContent = "";
+    return block;
+  } catch (err) {
+    const message = "Couldn't load courses. Your results are still here; try again.";
+    if (block) $(".result-status", block).textContent = message;
+    if (fPanel.hidden) { fPanel.hidden = false; document.body.classList.add("filters-open"); $("#open-filters").setAttribute("aria-expanded", "true"); }
+    $("#browse-status").textContent = message;
+    return null;
+  } finally {
+    if (block) { block.dataset.loading = "false"; $(".more", block).disabled = false; }
+    $("#f-show").disabled = false;
   }
-  const grid = $(".cards", block);
-  const tmp = document.createElement("div");
-  tmp.innerHTML = res.cards.map(cardHTML).join("");
-  bindCards(tmp, res.cards);
-  while (tmp.firstElementChild) grid.appendChild(tmp.firstElementChild);
-  const more = $(".more", block);
-  const shown = state.offset + res.cards.length;
-  more.hidden = shown >= res.total;
-  more.onclick = () => showResults({ ...state, offset: shown, block });
-  if (!append) block.scrollIntoView({ behavior: "smooth", block: "start" });
 }
+
 function describeFilters(state) {
   const f = state.filters, parts = [];
   if (state.query) parts.push(`“${state.query}”`);
@@ -721,7 +825,7 @@ filterSummary();
 // ---------- navigation helpers ----------
 function setActiveNav(id) { $$(".gn-link").forEach((b) => b.classList.toggle("active", b.id === id)); }
 setActiveNav("nav-ask");
-$("#nav-ask").addEventListener("click", () => { closeAll(); showHome(); scrollTo({ top: 0, behavior: "smooth" }); setActiveNav("nav-ask"); });
+$("#nav-ask").addEventListener("click", () => { closeAll(); toggleFilters(false); showHome(); scrollTo({ top: 0, behavior: "smooth" }); setActiveNav("nav-ask"); });
 $("#nav-browse").addEventListener("click", () => { closeAll(); toggleFilters(true); setActiveNav("nav-browse"); });
 $("#cta-browse").addEventListener("click", () => { toggleFilters(true); setActiveNav("nav-browse"); });
 $("#menu-prefs").addEventListener("click", () => openSheet("#prefs"));
@@ -748,3 +852,44 @@ new MutationObserver(() => {
   const last = turns[turns.length - 1];
   if (last) addFollowUps(last);
 }).observe($("#thread"), { childList: true, subtree: true });
+
+
+// ---------- Replayable first-visit guide (never sends a question automatically) ----------
+const guideSteps = [
+  ["Start with what matters to you", "Tell Qurated your interests, the term you're planning for, and how much time you have. Follow up to compare its suggestions.", "Try: Find a Spring 2027 Gen Ed about ethics with a manageable workload."],
+  ["Set your must-haves", "Use Filters for firm limits such as term, meeting days or workload. They apply to both browsing and chat. Preferences are softer guidance saved to your account.", "Browse with filters doesn't use your daily question allowance. Reset filters if too few courses match."],
+  ["Read the evidence", "Open a course card for meeting times, requirements and student reviews. Ratings and workloads describe past offerings; a course with no reviews isn't necessarily a bad fit.", "Always confirm availability and degree requirements in my.harvard or with your adviser. Qurated cannot guarantee grades or enrollment."],
+  ["Build your shortlist", "Tap a heart to save a course. With two or more favorites, you can ask Qurated to compare them. Mark courses you've taken so they won't be recommended again.", "New chat clears the conversation on this page. Your saved preferences, favorites, taken courses and filters stay in place."]
+];
+const guide = $("#quick-guide");
+let guideStep = 0;
+function renderGuide() {
+  const [title, copy, example] = guideSteps[guideStep];
+  $("#guide-progress").textContent = `Step ${guideStep + 1} of ${guideSteps.length}`;
+  $("#guide-title").textContent = title;
+  $("#guide-copy").textContent = copy;
+  $("#guide-example").textContent = example;
+  $("#guide-back").disabled = guideStep === 0;
+  $("#guide-next").textContent = guideStep === guideSteps.length - 1 ? "Try a question" : "Next";
+  $("#guide-title").focus();
+}
+function openGuide() {
+  closeAll(); toggleFilters(false); acctMenu.hidden = true;
+  guideStep = 0; guide.showModal(); renderGuide();
+}
+function dismissGuideInvitation() {
+  store.set("qurated.guideSeen.v1", true);
+  $("#guide-welcome").hidden = true;
+}
+["#start-guide", "#open-guide", "#menu-guide"].forEach(id => $(id).addEventListener("click", openGuide));
+$("#dismiss-guide").addEventListener("click", dismissGuideInvitation);
+["#guide-close", "#guide-skip"].forEach(id => $(id).addEventListener("click", () => guide.close()));
+guide.addEventListener("close", dismissGuideInvitation);
+$("#guide-back").addEventListener("click", () => { guideStep--; renderGuide(); });
+$("#guide-next").addEventListener("click", () => {
+  if (guideStep < guideSteps.length - 1) { guideStep++; renderGuide(); return; }
+  guide.close();
+  $("#input").value = "Find a Spring 2027 Gen Ed about ethics with a manageable workload.";
+  $("#input").focus(); $("#input").scrollIntoView({ block:"center", behavior:"smooth" });
+});
+$("#guide-welcome").hidden = !!store.get("qurated.guideSeen.v1", false);

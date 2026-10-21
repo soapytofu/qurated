@@ -16,9 +16,10 @@
         <button class="gn-link" id="nav-ask">Home</button>
         <button class="gn-link" id="nav-browse">Browse courses</button>
         <button class="gn-link" id="nav-favs">Favorites</button>
-        <button class="gn-link" id="nav-how">How it works</button>
+        <button class="gn-link" id="nav-how">Quick guide</button>
       </div>
       <div class="gn-icons">
+        <button class="iconbtn mobile-guide" id="open-guide" aria-label="Open quick guide" title="Quick guide">?</button>
         <button class="navbtn" id="new-chat" title="Start a new conversation" aria-label="New chat">
           <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span>New chat</span>
         </button>
@@ -44,11 +45,30 @@
     <div class="acct-name" id="me-name"></div>
     <div class="acct-email" id="me-email"></div>
     <div class="acct-quota" id="me-quota"></div>
+    <button id="menu-guide">Quick guide</button>
     <button id="menu-prefs">Preferences</button>
     <button id="menu-favs">Favorites</button>
     <button id="open-taken">Courses I've taken</button>
     <button id="logout">Sign out</button>
   </div>
+
+  <section class="welcome-guide" id="guide-welcome" hidden aria-label="Getting started">
+    <div><strong>New to Qurated?</strong><span> Learn to ask, filter and build your shortlist.</span></div>
+    <button class="pill pill-fill" id="start-guide">Take the quick guide</button>
+    <button class="iconbtn plain" id="dismiss-guide" aria-label="Dismiss guide invitation">✕</button>
+  </section>
+  <dialog id="quick-guide" class="quick-guide" aria-labelledby="guide-title" aria-describedby="guide-copy">
+    <button class="iconbtn plain guide-close" id="guide-close" aria-label="Close quick guide">✕</button>
+    <p class="guide-kicker">A quick start</p>
+    <p id="guide-progress" class="hint" aria-live="polite"></p>
+    <h2 id="guide-title" tabindex="-1"></h2>
+    <p id="guide-copy"></p>
+    <div id="guide-example" class="guide-example"></div>
+    <div class="guide-actions"><button class="pill pill-soft" id="guide-back">Back</button>
+      <button class="pill pill-fill" id="guide-next">Next</button></div>
+    <button class="link-btn" id="guide-skip">Skip for now</button>
+    <p class="hint">You can reopen this anytime from Quick guide or your account menu.</p>
+  </dialog>
 
   <!-- ===== Home (before the first question) ===== -->
   <div id="home">
@@ -145,13 +165,14 @@
       <label><input type="checkbox" id="f-has_reviews"> Has Q reviews</label>
     </div>
     <button type="button" class="pill pill-fill full" id="f-show">Show courses</button>
+    <p id="browse-status" class="hint" role="status" aria-live="polite"></p>
     <p class="hint">Filters also apply to Qurated's recommendations in the chat.</p>
   </aside>
 
   <!-- Preferences sheet -->
   <div class="scrim" id="scrim" hidden></div>
   <aside class="sheet" id="prefs" hidden aria-label="Preferences">
-    <header><h2>Your preferences</h2><button class="iconbtn plain close" data-close>✕</button></header>
+    <header><h2>Your preferences</h2><button class="iconbtn plain close" aria-label="Close panel" data-close>✕</button></header>
     <p class="hint">Qurated keeps these in mind for every question. They're saved to your account.</p>
     <label>Concentration (or intended)<input name="concentration" placeholder="e.g. Computer Science"></label>
     <label>Year<select name="year"><option value="">—</option><option>First-year</option><option>Sophomore</option><option>Junior</option><option>Senior</option></select></label>
@@ -162,12 +183,13 @@
     <label>Teaching style I like<input name="style" placeholder="e.g. small seminars, project-based, no exams"></label>
     <label>Avoid<input name="avoid" placeholder="e.g. 9am classes, heavy problem sets"></label>
     <button type="button" class="pill pill-soft full" id="prefs-taken">Courses I've taken…</button>
-    <button class="pill pill-fill full" data-close>Save</button>
+    <p id="prefs-status" class="hint" role="status" aria-live="polite"></p>
+    <button class="pill pill-fill full" id="prefs-save">Save preferences</button>
   </aside>
 
   <!-- Courses taken -->
   <aside class="sheet right" id="taken" hidden aria-label="Courses I've taken">
-    <header><h2>Courses I've taken</h2><button class="iconbtn plain close" data-close>✕</button></header>
+    <header><h2>Courses I've taken</h2><button class="iconbtn plain close" aria-label="Close panel" data-close>✕</button></header>
     <p class="hint">Qurated won't recommend these. Saved to your account.</p>
     <div class="taken-search">
       <input id="taken-input" autocomplete="off" placeholder="Search by code or title, e.g. COMPSCI 50" aria-label="Add a course you've taken">
@@ -178,7 +200,7 @@
 
   <!-- Favorites drawer -->
   <aside class="sheet right" id="favs" hidden aria-label="Favorites">
-    <header><h2>Favorites</h2><button class="iconbtn plain close" data-close>✕</button></header>
+    <header><h2>Favorites</h2><button class="iconbtn plain close" aria-label="Close panel" data-close>✕</button></header>
     <div id="fav-list"></div>
     <button class="pill pill-soft full" id="compare-favs">Ask Qurated to compare these</button>
   </aside>
@@ -186,7 +208,7 @@
   <!-- Feedback -->
   <div class="modal" id="feedback" hidden role="dialog" aria-modal="true" aria-labelledby="fb-title">
     <form class="modal-card fb-card" id="feedback-form">
-      <button type="button" class="iconbtn plain close" data-close>✕</button>
+      <button type="button" class="iconbtn plain close" aria-label="Close panel" data-close>✕</button>
       <h2 id="fb-title">Send feedback</h2>
       <p class="meta">Tell us what's working, what's broken, or what you wish Qurated could do.</p>
       <div class="fb-kinds" role="radiogroup" aria-label="Feedback type">
@@ -194,7 +216,7 @@
         <label><input type="radio" name="kind" value="bug"><span>Something's broken</span></label>
         <label><input type="radio" name="kind" value="other"><span>Other</span></label>
       </div>
-      <textarea id="fb-message" rows="5" maxlength="3000" placeholder="Your feedback…" required></textarea>
+      <textarea aria-label="Your feedback" id="fb-message" rows="5" maxlength="3000" placeholder="Your feedback…" required></textarea>
       <label class="fb-email"><input type="checkbox" id="fb-include-email"> Include my email so you can follow up</label>
       <p class="fb-status" id="fb-status" hidden></p>
       <button type="submit" class="pill pill-fill" id="fb-send">Send</button>
@@ -202,9 +224,9 @@
   </div>
 
   <!-- Course detail -->
-  <div class="modal" id="detail" hidden role="dialog" aria-modal="true">
+  <div class="modal" id="detail" hidden role="dialog" aria-modal="true" aria-label="Course details">
     <div class="modal-card">
-      <button class="iconbtn plain close" data-close>✕</button>
+      <button class="iconbtn plain close" aria-label="Close panel" data-close>✕</button>
       <div id="detail-body"></div>
     </div>
   </div>
