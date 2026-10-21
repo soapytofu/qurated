@@ -19,3 +19,37 @@ test('failed HTTP writes reject rather than report success', async () => {
   vm.runInContext(extract('async function checkedWrite', 'function saveError'), sandbox);
   await assert.rejects(sandbox.checkedWrite('/api/account/prefs', {}), /weren't saved/);
 });
+
+for (const exit of ['complete', 'skip', 'close', 'escape']) {
+  test(`guide ${exit} persists dismissal before the queued close event`, () => {
+    const nodes = new Map(), saved = new Map();
+    let closeQueued = false;
+    const node = (id) => {
+      if (!nodes.has(id)) nodes.set(id, {
+        handlers: {}, hidden: false,
+        addEventListener(type, fn) { this.handlers[type] = fn; },
+        focus() {}, scrollIntoView() {}, showModal() {},
+        close() { closeQueued = true; }, // Deliberately do not dispatch the asynchronous close event.
+      });
+      return nodes.get(id);
+    };
+    const context = {
+      $: node, store: { set: (k, v) => saved.set(k, v), get: (k, fallback) => saved.get(k) ?? fallback },
+      closeAll() {}, toggleFilters() {}, acctMenu: {},
+    };
+    vm.createContext(context);
+    vm.runInContext(source.slice(source.indexOf('const guideSteps =')), context);
+    if (exit === 'complete') {
+      for (let i = 0; i < 4; i++) node('#guide-next').handlers.click();
+    } else if (exit === 'escape') {
+      let prevented = false;
+      node('#quick-guide').handlers.cancel({ preventDefault() { prevented = true; } });
+      assert.equal(prevented, true);
+    } else {
+      node(exit === 'skip' ? '#guide-skip' : '#guide-close').handlers.click();
+    }
+    assert.equal(closeQueued, true);
+    assert.equal(saved.get('qurated.guideSeen.v1'), true);
+    assert.equal(node('#guide-welcome').hidden, true);
+  });
+}

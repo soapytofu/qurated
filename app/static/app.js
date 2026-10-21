@@ -881,14 +881,21 @@ function dismissGuideInvitation() {
   store.set("qurated.guideSeen.v1", true);
   $("#guide-welcome").hidden = true;
 }
+function closeGuide() {
+  // Persist before closing: the browser queues the native close event asynchronously.
+  // A reload/navigation can happen after the dialog disappears but before that event runs.
+  dismissGuideInvitation();
+  guide.close();
+}
 ["#start-guide", "#open-guide", "#menu-guide"].forEach(id => $(id).addEventListener("click", openGuide));
 $("#dismiss-guide").addEventListener("click", dismissGuideInvitation);
-["#guide-close", "#guide-skip"].forEach(id => $(id).addEventListener("click", () => guide.close()));
+["#guide-close", "#guide-skip"].forEach(id => $(id).addEventListener("click", closeGuide));
+guide.addEventListener("cancel", event => { event.preventDefault(); closeGuide(); });
 guide.addEventListener("close", dismissGuideInvitation);
 $("#guide-back").addEventListener("click", () => { guideStep--; renderGuide(); });
 $("#guide-next").addEventListener("click", () => {
   if (guideStep < guideSteps.length - 1) { guideStep++; renderGuide(); return; }
-  guide.close();
+  closeGuide();
   $("#input").value = "Find a Spring 2027 Gen Ed about ethics with a manageable workload.";
   $("#input").focus(); $("#input").scrollIntoView({ block:"center", behavior:"smooth" });
 });
