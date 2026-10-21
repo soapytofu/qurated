@@ -400,3 +400,36 @@ main { max-width: 1024px; margin: 0 auto; padding: 0 22px 170px; }
 /* Visible keyboard focus everywhere */
 :focus-visible { outline: 3px solid rgba(165, 28, 48, .45); outline-offset: 2px; border-radius: 8px; }
 .globalnav :focus-visible { outline-color: rgba(224, 72, 94, .8); }
+
+/* First-time guidance */
+.welcome-guide { display:flex; align-items:center; gap:14px; padding:18px 24px; background:var(--crimson-tint); }
+.welcome-guide > div { flex:1; font-size:15px; }
+.welcome-guide .pill { font-size:14px; padding:9px 16px; }
+.quick-guide { width:min(560px, calc(100% - 32px)); max-height:calc(100dvh - 32px); overflow:auto;
+  border:0; border-radius:24px; padding:36px; color:var(--text); box-shadow:var(--shadow); }
+.quick-guide::backdrop { background:rgba(0,0,0,.48); }
+.quick-guide h2 { margin:12px 0; font-size:30px; line-height:1.15; letter-spacing:-.025em; }
+.quick-guide #guide-copy { color:var(--text-2); line-height:1.6; }
+.guide-kicker { color:var(--crimson); font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; }
+.guide-close { position:absolute; top:14px; right:14px; }
+.guide-example { border:1px solid var(--line-soft); background:var(--light); padding:18px; border-radius:14px; margin:20px 0; }
+.guide-example p { margin:0; }
+.guide-actions { display:flex; justify-content:space-between; gap:12px; margin-bottom:18px; }
+.mobile-guide { display:none; font-weight:700; }
+body:has(dialog[open]), body.overlay-open { overflow:hidden; }
+@media (max-width:760px) {
+  .mobile-guide { display:grid; }
+  .welcome-guide { flex-wrap:wrap; padding:16px; gap:10px; }
+  .welcome-guide > div { flex-basis:calc(100% - 50px); }
+  .welcome-guide #dismiss-guide { order:1; }
+  .welcome-guide .pill { order:2; }
+  .quick-guide { padding:28px 22px; }
+  .composer #open-filters { display:flex; padding:10px; border:0; }
+  .composer #open-filters > span:first-of-type { display:none; }
+  .gn-inner { padding:0 12px; }
+}
+@media (prefers-reduced-motion:reduce) {
+  *, *::before, *::after { animation:none !important; transition:none !important; scroll-behavior:auto !important; }
+}
+
+@media (max-width:360px) { .globalnav .wordmark { display:none; } }
