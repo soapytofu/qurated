@@ -41,7 +41,8 @@ def parse_meetings(el):
     meetings = []
     for group in el.select('[aria-label="Week Days"]'):
         days = [DAYS[d["aria-label"].split(",")[0]] for d in group.select("[aria-label]")
-                if d["aria-label"].endswith("selected") and d["aria-label"].split(",")[0] in DAYS]
+                if d["aria-label"].rsplit(",", 1)[-1].strip().lower() == "selected"
+                and d["aria-label"].split(",")[0] in DAYS]
         m = TIME_RE.search(text(group.parent) or "")
         meetings.append({"days": days, "time": m.group(0).replace(" ", "") if m else None})
     return meetings
