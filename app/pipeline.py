@@ -108,7 +108,12 @@ def describe_filters(f):
 
 
 def retrieve(db, p, taken=frozenset(), k=8, filters=None):
-    dept = "GENED" if p["gen_ed"] else None
+    dept = None
+    filters = dict(filters or {})
+    if p["term"] in UPCOMING:
+        filters.setdefault("term", p["term"])
+    if p["gen_ed"] and not filters.get("gen_ed"):
+        filters["any_gen_ed"] = True
     # Over-fetch when a term filter will prune results afterwards (search ranks before the term check).
     limit = 40 if p["term"] in UPCOMING else 10
     filters = filters or {}
@@ -133,7 +138,8 @@ def retrieve(db, p, taken=frozenset(), k=8, filters=None):
             if cross & seen:
                 continue  # same course under another code
             seen.add(b["code"]); seen |= cross; out.append(b)
-    explicit = [db.brief(code) for code in p["codes"][:6] if db.lookup(code) and not db.is_taken(code, taken)]
+    explicit = [db.brief(c["code"]) for code in p["codes"][:6]
+                if (c := db.lookup(code)) and not db.is_taken(c["code"], taken) and db.matches(c, filters)]
     explicit_codes = {b["code"] for b in explicit}
     cands = (explicit + [b for b in out if b["code"] not in explicit_codes])[:k]
     enriched = []

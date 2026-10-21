@@ -262,6 +262,8 @@ class CourseDB:
                     return False
         if f.get("has_reviews") and not c["offerings"]:
             return False
+        if f.get("any_gen_ed") and not cat.get("gen_ed"):
+            return False
         if f.get("gen_ed") and f["gen_ed"] not in (cat.get("gen_ed") or ""):
             return False
         if f.get("divisional") and f["divisional"] not in (cat.get("divisional") or ""):
@@ -272,7 +274,8 @@ class CourseDB:
             return False
         if f.get("grading"):
             g = (cat.get("grading") or "").lower()
-            if (f["grading"] == "letter") != ("letter" in g):
+            if not g or (f["grading"] == "letter" and "letter" not in g) or (
+                    f["grading"] == "satisfactory" and not any(x in g for x in ("sat/unsat", "satisfactory", "pass/fail"))):
                 return False
         if f.get("format") and cat.get("component") != f["format"]:
             return False
