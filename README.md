@@ -5,7 +5,7 @@
 Its answers draw on what past students said in their **Q reports** and on the **my.harvard catalog**.
 
 - 🎓 **Grounded answers:** ratings, weekly workload and real student quotes from Q reports, plus terms offered, meeting times, Gen Ed / Divisional Distribution / QRD, descriptions and syllabus links from my.harvard. Every quote is checked word-for-word against the source.
-- ⚡ **Fast:** the first course card appears in about 2 seconds, and the full answer finishes in about 3.
+- 🛡️ **Validated responses:** progress appears immediately; complete answers are checked before cards or advice are displayed.
 - 🏷️ **Course tags:** each course is tagged with what students consistently say about it (e.g. "engaging lectures", "heavy reading").
 - ❤️ **Student accounts:** favorites, preferences and courses already taken are saved per student, and courses they've taken are never recommended.
 - 🔒 **Harvard-only:** sign-in requires a verified `@college.harvard.edu` Google account.
@@ -28,7 +28,7 @@ Its answers draw on what past students said in their **Q reports** and on the **
  (public pages)                            │  in-memory  │  1. pre-check: does this need a course search?
  Claude Haiku ─tag_courses.py► tags.json ──┘  BM25 index │  2. retrieval: filters + keyword search (~2 ms)
    (Batches API)                                          │  3. ONE Claude Sonnet call → structured JSON
- SQLite: favorites / courses taken / prefs ◄──────────────┤  4. stream: each card as it's written, then advice
+ SQLite: favorites / courses taken / prefs ◄──────────────┤  4. validate the complete answer, then send cards + advice
 ```
 
 1. **Scrape (offline).**
@@ -41,10 +41,12 @@ Its answers draw on what past students said in their **Q reports** and on the **
    - A quick pre-check (a regex, or Claude Haiku) skips searching for questions like "what's a Gen Ed?".
    - The server picks the top 8 candidate courses itself, with no LLM involved.
    - It then makes **one** Claude Sonnet 5.5 call, with thinking off and a JSON-schema output, that returns `{picks, advice}`.
-   - The server parses the JSON as it streams: each pick becomes a course card the moment it's complete, then the advice streams in.
+   - The server buffers the structured response, checks its shape and course allowlist, verifies quotes, and then sends cards and advice. Refused or incomplete responses are not displayed.
    - Follow-ups like "which of those is lightest?" reuse the courses already shown.
 
 ### Why one call instead of an agent loop
+Historical measurements before response-validation guardrails (rebenchmark current latency before advertising these numbers):
+
 I benchmarked several approaches (`app/experiments/bench.py`) on 8 fixed student questions, with Claude Opus as a
 blind judge scoring fit, grounding and helpfulness from 1 to 5:
 
@@ -152,3 +154,24 @@ refresh runbook, cost model, usage limits, and the path to official data access.
 ## Credits
 Built for the Harvard Undergraduate Association. Not an official Harvard University service.
 Course data © its respective owners. Q reports courtesy of the Harvard FAS Office of Undergraduate Education.
+
+
+## Review, guardrails, and tests
+
+See [the code review](docs/CODE_REVIEW.md) for prioritized findings, fixes, limitations and a live safety-evaluation checklist.
+
+```bash
+uv sync --project app --locked
+app/.venv/bin/python -m pytest tests -q
+node --check app/static/app.js
+node --test tests/frontend.test.cjs
+```
+
+Tests use synthetic course records, mocked model replies, and a temporary account database. They require no
+Google credentials, private Q reports, browser installation, or paid model calls. CI runs these same checks.
+Use `uv sync --project app --locked --no-dev` for a production environment.
+
+Daily chat quotas are stored in SQLite. Conversation context is process-local, limited to three exchanges,
+and expires after one idle hour (removed on the next chat acquisition). At most 1,000 conversations are kept
+per process. Use one worker for consistent follow-ups, or introduce shared conversation storage before scaling
+across workers. `QURATED_DB_PATH` optionally overrides the account database path.

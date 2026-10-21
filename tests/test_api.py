@@ -57,3 +57,34 @@ def test_reload_detects_in_place_edits_and_preserves_old_index_on_failure(tmp_pa
     with pytest.raises(ValueError):
         server._maybe_reload()
     assert server.db is original
+
+
+def test_authenticated_chat_returns_validated_card(monkeypatch):
+    import json
+    from types import SimpleNamespace
+    from test_retrieval import database
+    db = database()
+    monkeypatch.setattr(server, 'db', db)
+    monkeypatch.setattr(server, '_maybe_reload', lambda: None)
+    monkeypatch.setattr(server, 'needs_q_data', lambda *a: (True, 0))
+    def model_stream(client, kwargs):
+        payload = json.loads(kwargs['messages'][-1]['content'])
+        assert 'TEST 0' in {c['code'] for c in payload['candidates']}
+        yield 'text', json.dumps(dict(picks=[dict(code='TEST 0', reason='Matches your request.', quote='fabricated')],
+                                     advice='Check the catalog for details.'))
+        yield 'final', SimpleNamespace(stop_reason='end_turn', usage=SimpleNamespace(
+            input_tokens=0, output_tokens=0, cache_read_input_tokens=0, cache_creation_input_tokens=0))
+    monkeypatch.setattr(server.pipeline, 'hedged_stream', model_stream)
+    server.app.dependency_overrides[server.current_user] = lambda: {'email': 'chat-test@example.com'}
+    try:
+        with TestClient(server.app) as client:
+            res = client.post('/api/chat', json={'message': 'Tell me about TEST 0'})
+            assert res.status_code == 200
+            assert res.headers['cache-control'] == 'no-store'
+            assert res.headers['x-session-id']
+            events = [json.loads(line[6:]) for line in res.text.splitlines() if line.startswith('data: ')]
+            cards = [event['card'] for event in events if event['type'] == 'card']
+            assert cards[0]['code'] == 'TEST 0' and cards[0]['quote'] is None
+            assert events[-1]['type'] == 'done'
+    finally:
+        server.app.dependency_overrides.clear()
