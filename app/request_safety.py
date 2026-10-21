@@ -13,9 +13,12 @@ class RequestSafetyMiddleware:
         headers = dict(scope['headers'])
         origin = headers.get(b'origin')
         host = headers.get(b'host', b'').decode('latin1')
-        if headers.get(b'sec-fetch-site') == b'cross-site' or (origin and (
-                urlsplit(origin.decode('latin1')).netloc != host or
-                urlsplit(origin.decode('latin1')).scheme not in {'http', 'https'})):
+        try:
+            parsed = urlsplit(origin.decode('latin1')) if origin else None
+            invalid_origin = parsed and (parsed.netloc != host or parsed.scheme not in {'http', 'https'})
+        except ValueError:
+            invalid_origin = True
+        if headers.get(b'sec-fetch-site') == b'cross-site' or invalid_origin:
             return await JSONResponse({'detail': 'Cross-origin requests are not allowed.'}, 403)(scope, receive, send)
         body = bytearray()
         while True:
