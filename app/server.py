@@ -24,6 +24,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 import db as store
 import pipeline
+from chat_state import ChatState
 from courses import CATALOG_DIR, CourseDB, REPORTS_DIR, TAGS_FILE
 
 load_dotenv(Path(__file__).parent / ".env")
@@ -44,7 +45,7 @@ GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 ALLOWED_DOMAINS = {d.strip().lower() for d in os.environ.get("ALLOWED_EMAIL_DOMAINS", "college.harvard.edu").split(",") if d.strip()}
 ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}  # see costs
 DAILY_LIMIT = int(os.environ.get("DAILY_QUESTION_LIMIT", "40"))  # per student, protects your API credit
-questions_today: dict[tuple, int] = defaultdict(int)  # (email, date) -> count
+chat_state = ChatState()
 _report_count = len(list(REPORTS_DIR.glob("*.json")))
 
 SYSTEM = """You are Qurated, the Harvard Undergraduate Association's course advisor for Harvard College students. You help students find FAS courses \
@@ -375,36 +376,41 @@ def chat_stream(session_id, message, preferences, favorites, taken=(), use_prefe
     yield sse({"type": "done"})
 
 
-fast_sessions: dict[tuple, list] = {}  # (email, session id) -> plain-text turns for the fast pipeline
-
-
 def fast_chat_stream(session_key, message, preferences, favorites, taken=(), filters=None):
     """Production path: router -> server-side retrieval -> one streamed Sonnet call (see pipeline.py)."""
-    _maybe_reload()
-    history = fast_sessions.setdefault(session_key, [])
-    prior = prior_questions.setdefault(session_key, [])
+    entry = chat_state.acquire(session_key)
+    if entry is None:
+        yield sse({"type": "error", "text": "This chat is busy. Please try again shortly."})
+        yield sse({"type": "done"})
+        return
+    try:
+        yield from _fast_chat_stream(entry, message, preferences, favorites, taken, filters)
+    finally:
+        chat_state.release(session_key)
+
+
+def _fast_chat_stream(entry, message, preferences, favorites, taken, filters):
+    history, prior = entry["history"], entry["prior"]
+    try:
+        _maybe_reload()
+        yield from _run_fast_chat(history, prior, message, preferences, favorites, taken, filters)
+    except Exception as e:
+        print(f"[chat] failed: {type(e).__name__}", flush=True)
+        yield sse({"type": "error", "text": "Unable to answer right now. Please try again shortly."})
+    yield sse({"type": "done"})
+
+
+def _run_fast_chat(history, prior, message, preferences, favorites, taken, filters):
     if pipeline.is_follow_up(message, history):
         search, router_cost = True, 0.0  # compare the courses we just showed
     else:
         search, router_cost = needs_q_data(message, prior)
     prior.append(message[:300])
-    try:
-        cost, secs = yield from pipeline.stream_answer(client, db, history, message, preferences, favorites,
-                                                       list(taken), search, sse, db.card, _verified_quote,
-                                                       filters=filters)
-        print(f"[usage] fast search={search} {secs:.1f}s ≈ ${cost + router_cost:.4f}", flush=True)
-    except anthropic.AuthenticationError:
-        yield sse({"type": "error", "text": "Missing or invalid ANTHROPIC_API_KEY. Add it to app/.env and restart."})
-    except anthropic.RateLimitError:
-        yield sse({"type": "error", "text": "Lots of people are asking right now. Try again in a moment."})
-    except anthropic.APIStatusError as e:
-        yield sse({"type": "error", "text": f"API error {e.status_code}: {e.message}"})
-    except anthropic.APIConnectionError:
-        yield sse({"type": "error", "text": "Couldn't reach the Claude API. Check your connection."})
-    except Exception as e:  # keep the stream well-formed so the UI never hangs
-        yield sse({"type": "error", "text": f"Something went wrong: {e}"})
+    cost, secs = yield from pipeline.stream_answer(client, db, history, message, preferences, favorites,
+                                                   list(taken), search, sse, db.card, _verified_quote,
+                                                   filters=filters)
+    print(f"[usage] fast search={search} {secs:.1f}s ≈ ${cost + router_cost:.4f}", flush=True)
     yield sse({"type": "usage", "searched": search})
-    yield sse({"type": "done"})
 
 
 app = FastAPI()
@@ -464,7 +470,7 @@ def logout(request: Request):
 
 @app.get("/api/me")
 def me(user=Depends(current_user)):
-    used = questions_today[(user["email"], date.today())]
+    used = store.questions_used(user["email"], date.today())
     return {**user, "questions_left": max(DAILY_LIMIT - used, 0), "daily_limit": DAILY_LIMIT,
             "is_admin": user["email"] in ADMIN_EMAILS}
 
@@ -578,9 +584,8 @@ def browse(req: BrowseRequest, user=Depends(current_user)):
 @app.post("/api/chat")
 def chat(req: ChatRequest, user=Depends(current_user)):
     key = (user["email"], date.today())
-    if questions_today[key] >= DAILY_LIMIT:
+    if not store.reserve_question(*key, DAILY_LIMIT):
         raise HTTPException(429, f"You've hit today's limit of {DAILY_LIMIT} questions. Come back tomorrow!")
-    questions_today[key] += 1
     sid = req.session_id or uuid.uuid4().hex
     email = user["email"]
     prefs = store.prefs(email) or (req.preferences or {})
