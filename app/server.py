@@ -19,12 +19,13 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.sessions import SessionMiddleware
 
 import db as store
 import pipeline
 from chat_state import ChatState
+from request_safety import RequestSafetyMiddleware
 from courses import CATALOG_DIR, CourseDB, REPORTS_DIR, TAGS_FILE
 
 load_dotenv(Path(__file__).parent / ".env")
@@ -414,6 +415,7 @@ def _run_fast_chat(history, prior, message, preferences, favorites, taken, filte
 
 
 app = FastAPI()
+app.add_middleware(RequestSafetyMiddleware)
 SESSION_SECRET = os.environ.get("SESSION_SECRET")
 if not SESSION_SECRET:
     import secrets
@@ -433,7 +435,7 @@ def current_user(request: Request):
 
 # ---- Auth ----
 class GoogleLogin(BaseModel):
-    credential: str
+    credential: str = Field(min_length=1, max_length=8192)
 
 
 @app.get("/api/auth/config")
@@ -482,7 +484,7 @@ feedback_today: dict[tuple, int] = defaultdict(int)
 
 class Feedback(BaseModel):
     kind: str = "other"
-    message: str
+    message: str = Field(min_length=1, max_length=3000)
     include_email: bool = False
 
 
@@ -511,11 +513,18 @@ def feedback(body: Feedback, user=Depends(current_user)):
 
 # ---- App API (signed-in only) ----
 class ChatRequest(BaseModel):
-    session_id: str | None = None
-    message: str
+    session_id: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    message: str = Field(min_length=1, max_length=2000)
     preferences: dict | None = None
-    favorites: list[str] = []
+    favorites: list[str] = Field(default_factory=list, max_length=30)
     filters: dict | None = None
+
+    @field_validator("message")
+    @classmethod
+    def nonblank(cls, value):
+        if not value.strip():
+            raise ValueError("Please enter a question.")
+        return value.strip()
 
 
 def clean_filters(f):
@@ -531,7 +540,7 @@ def clean_filters(f):
             v = float(f.get(k) or 0)
             if lo <= v <= hi:
                 out[k] = v
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             pass
     if f.get("gen_ed") in ("Aesthetics and Culture", "Ethics and Civics", "Histories, Societies, Individuals",
                            "Science and Technology in Society"):
@@ -542,14 +551,15 @@ def clean_filters(f):
         out["grading"] = f["grading"]
     if f.get("format") in ("Lecture", "Seminar"):
         out["format"] = f["format"]
-    days = [d for d in (f.get("avoid_days") or []) if d in ("M", "T", "W", "Th", "F")]
+    raw_days = f.get("avoid_days")
+    days = [d for d in raw_days if d in ("M", "T", "W", "Th", "F")] if isinstance(raw_days, list) else []
     if days:
         out["avoid_days"] = days
     try:
         es = int(f.get("earliest_start") or 0)
         if 0 < es < 24 * 60:
             out["earliest_start"] = es
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         pass
     for k in ("qrd", "small_class", "has_reviews"):
         if f.get(k) is True:
@@ -588,10 +598,10 @@ def chat(req: ChatRequest, user=Depends(current_user)):
         raise HTTPException(429, f"You've hit today's limit of {DAILY_LIMIT} questions. Come back tomorrow!")
     sid = req.session_id or uuid.uuid4().hex
     email = user["email"]
-    prefs = store.prefs(email) or (req.preferences or {})
+    prefs = clean_preferences(store.prefs(email))
     favs = [f["code"] for f in store.favorites(email)][:30]
     taken = store.taken(email)
-    return StreamingResponse(fast_chat_stream((email, sid), req.message[:2000], prefs, favs, taken,
+    return StreamingResponse(fast_chat_stream((email, sid), req.message, prefs, favs, taken,
                                               clean_filters(req.filters)),
                              media_type="text/event-stream", headers={"X-Session-Id": sid})
 
@@ -621,6 +631,21 @@ def meta(user=Depends(current_user)):
 PREF_KEYS = {"concentration", "year", "interests", "requirements", "max_workload_hrs", "style", "avoid"}
 
 
+def clean_preferences(prefs):
+    """Normalize saved legacy values as well as new writes before they reach retrieval."""
+    import math
+    clean = {k: v[:300] for k, v in prefs.items() if k in PREF_KEYS and
+             k != "max_workload_hrs" and isinstance(v, str)}
+    try:
+        raw = prefs.get("max_workload_hrs", 0)
+        value = float(raw) if not isinstance(raw, bool) else 0
+        if math.isfinite(value) and 0 <= value <= 40:
+            clean["max_workload_hrs"] = value
+    except (ValueError, TypeError, OverflowError):
+        pass
+    return clean
+
+
 @app.get("/api/account")
 def account(user=Depends(current_user)):
     e = user["email"]
@@ -635,7 +660,8 @@ def add_favorite(code: str, card: dict, user=Depends(current_user)):
         raise HTTPException(404, "Unknown course")
     fresh = db.card(c["code"]) or {}
     # Keep the model's reason/quote from the card the student hearted, but trust our own data for the rest.
-    fresh.update({k: str(card[k])[:600] for k in ("reason", "quote") if card.get(k)})
+    fresh.update({k: str(card[k])[:600] for k in ("reason",) if card.get(k)})
+    fresh["quote"] = _verified_quote(c["code"], str(card.get("quote") or "")[:600])
     store.add_favorite(user["email"], c["code"], fresh)
     return {"ok": True}
 
@@ -663,7 +689,7 @@ def remove_taken(code: str, user=Depends(current_user)):
 
 @app.put("/api/account/prefs")
 def set_prefs(prefs: dict, user=Depends(current_user)):
-    clean = {k: (v if isinstance(v, (int, float)) else str(v)[:300]) for k, v in prefs.items() if k in PREF_KEYS}
+    clean = clean_preferences(prefs)
     store.set_prefs(user["email"], clean)
     return {"ok": True}
 
@@ -679,6 +705,10 @@ async def revalidate_static(request: Request, call_next):
     """Make browsers re-check static files on each load (cheap 304s), so an old cached app.js can never run
     against a newer page and break buttons."""
     response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "same-origin"
     if request.url.path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-cache"
     return response
