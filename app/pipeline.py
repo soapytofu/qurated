@@ -127,7 +127,7 @@ def retrieve(db, p, taken=frozenset(), k=8, filters=None):
                  for q in p["queries"]]
     if filters and p["queries"] and not any(lists):
         # Keywords + filters found nothing: fall back to the best-rated courses that satisfy the filters.
-        lists = [[db.brief(c["code"]) for c in db.browse(filters, exclude=taken, limit=10)["cards"]]]
+        lists = [[db.brief(c["code"], filters=filters) for c in db.browse(filters, exclude=taken, limit=10)["cards"]]]
     seen, out = set(), []
     for lst in lists:
         for b in lst:
@@ -139,7 +139,7 @@ def retrieve(db, p, taken=frozenset(), k=8, filters=None):
             if cross & seen:
                 continue  # same course under another code
             seen.add(b["code"]); seen |= cross; out.append(b)
-    explicit = [db.brief(c["code"]) for code in p["codes"][:6]
+    explicit = [db.brief(c["code"], filters=filters) for code in p["codes"][:6]
                 if (c := db.lookup(code)) and not db.is_taken(c["code"], taken) and db.matches(c, filters)]
     explicit_codes = {b["code"] for b in explicit}
     cands = (explicit + [b for b in out if b["code"] not in explicit_codes])[:k]
@@ -147,7 +147,7 @@ def retrieve(db, p, taken=frozenset(), k=8, filters=None):
     for i, b in enumerate(cands):
         is_explicit = b["code"] in explicit_codes
         n_comments = 3 if is_explicit else (2 if i < 3 else 0)
-        d = db.detail(b["code"], max_comments=max(n_comments, 1), compact=True)
+        d = db.detail(b["code"], max_comments=max(n_comments, 1), compact=True, filters=filters)
         cat = d.get("catalog") or {}
         offered = [{"term": o["term"], "sections": o["sections"][: (30 if is_explicit else 3)],
                     "n_sections": o["n_sections"]} for o in cat.get("offered", []) if o["term"] in UPCOMING]
@@ -266,8 +266,11 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
     if search:
         p = plan(db, message, preferences, history)
         yield sse({"type": "status", "text": "Searching courses"})
-        if filters and filters.get("term"):
+        filters = dict(filters or {})
+        if filters.get("term"):
             p["term"] = filters["term"]
+        elif p["term"] in UPCOMING:
+            filters["term"] = p["term"]
         cands = retrieve(db, p, frozenset(taken), filters=filters)
     yield sse({"type": "status", "text": "Preparing a grounded answer"})
     # Structured data keeps source text separate from trusted system instructions.
@@ -299,7 +302,7 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
         yield sse({"type": "error", "text": SAFE_FAILURE})
         return _cost(final.usage), time.perf_counter() - t0
     for pick in picks:
-        card = card_for(pick["code"])
+        card = db.card(pick["code"], filters=filters)
         if card:
             yield sse({"type": "card", "card": {**card, "reason": pick["reason"], "quote": pick["quote"]}})
     yield sse({"type": "text", "delta": advice})

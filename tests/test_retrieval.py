@@ -33,3 +33,25 @@ def test_unknown_grading_is_not_satisfactory():
     assert not db.matches(db.courses['TEST 0'], {'grading': 'satisfactory'})
     db.courses['TEST 0']['catalog']['grading'] = 'Satisfactory/Unsatisfactory'
     assert db.matches(db.courses['TEST 0'], {'grading': 'satisfactory'})
+
+
+def test_displayed_meeting_and_model_context_match_filters():
+    db = database()
+    c = db.courses['TEST 0']
+    bad = dict(instructors=['Early teacher'], meetings=[dict(days=['M'], time='8:00am-9:00am')])
+    good = dict(instructors=['Late teacher'], meetings=[dict(days=['T'], time='1:00pm-2:00pm')])
+    c['catalog']['offered'] = [dict(term='2026 Fall', sections=[bad]),
+                               dict(term='2027 Spring', sections=[bad, good])]
+    f = dict(term='2027 Spring', earliest_start=600, avoid_days=['M'])
+    card = db.browse(f)['cards'][0]
+    assert card['instructors'] == ['Late teacher']
+    assert card['next_offered'] == '2027 Spring · T 1:00pm-2:00pm'
+    p = dict(queries=[], codes=['TEST 0'], term='2027 Spring', gen_ed=False, max_workload=0)
+    candidate = retrieve(db, p, filters=f)[0]
+    assert candidate['next_meets'] == '2027 Spring: T 1:00pm-2:00pm'
+    assert candidate['offered_sections'][0]['sections'][0]['instructors'] == ['Late teacher']
+    assert len(candidate['offered_sections'][0]['sections']) == 1
+
+
+def test_unknown_meeting_cannot_confirm_schedule_fit():
+    assert not CourseDB.section_fits({'meetings': [{'days': ['T']}, {'days': []}]}, {'avoid_days': ['M']})

@@ -195,11 +195,13 @@ class CourseDB:
         return c["offerings"][0] if c["offerings"] else NO_Q
 
     @staticmethod
-    def _next(c):
+    def _next(c, filters=None):
         """(term, first section) of the next upcoming offering, or (None, None)."""
         for o in (c.get("catalog") or {}).get("offered", []):
-            if o["term"] in UPCOMING and o["sections"]:
-                return o["term"], o["sections"][0]
+            if o["term"] in UPCOMING and (not filters or not filters.get("term") or o["term"] == filters["term"]):
+                for section in o["sections"]:
+                    if CourseDB.section_fits(section, filters):
+                        return o["term"], section
         return None, None
 
     @staticmethod
@@ -279,18 +281,22 @@ class CourseDB:
                 return False
         if f.get("format") and cat.get("component") != f["format"]:
             return False
-        avoid, earliest = set(f.get("avoid_days") or []), f.get("earliest_start")
-        if avoid or earliest:
-            # Keep the course if at least one section (in the chosen term) fits the schedule constraints.
-            def fits(sec):
-                ms = [m for m in sec.get("meetings", []) if m.get("days")]
-                if not ms:
-                    return False  # time TBA: can't confirm it fits
-                return all(not (set(m["days"]) & avoid) and
-                           (not earliest or (start_minutes(m.get("time")) or 0) >= earliest) for m in ms)
-            if not any(fits(sec) for sec in self._term_sections(c, term)):
+        if f.get("avoid_days") or f.get("earliest_start"):
+            if not any(self.section_fits(sec, f) for sec in self._term_sections(c, term)):
                 return False
         return True
+
+    @staticmethod
+    def section_fits(section, filters=None):
+        f = filters or {}
+        avoid, earliest = set(f.get("avoid_days") or []), f.get("earliest_start")
+        if not avoid and not earliest:
+            return True
+        meetings = section.get("meetings", [])
+        if not meetings or any(not m.get("days") for m in meetings):
+            return False
+        return all(not (set(m["days"]) & avoid) and
+                   (not earliest or (start_minutes(m.get("time")) or 0) >= earliest) for m in meetings)
 
     def browse(self, f=None, query="", sort="rating", offset=0, limit=24, exclude=frozenset()):
         """Direct search, no LLM: every course matching the filters, ranked by `sort` (or by keyword relevance)."""
@@ -315,7 +321,7 @@ class CourseDB:
                    "code": 0}.get(sort, -bayes)
             rows.append(((-rel if q_tokens and sort == "relevance" else key), code))
         rows.sort()
-        return {"total": len(rows), "cards": [self.card(code) for _, code in rows[offset:offset + limit]]}
+        return {"total": len(rows), "cards": [self.card(code, filters=f) for _, code in rows[offset:offset + limit]]}
 
     def facets(self):
         subjects = {}
@@ -366,13 +372,13 @@ class CourseDB:
             offered_soon = 0.5 if self._next(c)[0] else 0.0  # students are planning upcoming terms
             results.append((relevance + quality + offered_soon, code))
         results.sort(reverse=True)
-        return [self.brief(code) for _, code in results[:limit]]
+        return [self.brief(code, filters=filters) for _, code in results[:limit]]
 
-    def brief(self, code):
+    def brief(self, code, filters=None):
         c = self.courses[code]
         o = self._q(c)
         cat = c.get("catalog") or {}
-        term, sec = self._next(c)
+        term, sec = self._next(c, filters)
         return {
             "code": code,
             "title": c["title"],
@@ -395,7 +401,7 @@ class CourseDB:
             "no_q_data": not c["offerings"],
         }
 
-    def detail(self, code, max_comments=15, compact=False):
+    def detail(self, code, max_comments=15, compact=False, filters=None):
         c = self.lookup(code)
         if not c:
             return None
@@ -405,6 +411,10 @@ class CourseDB:
         keep = ("term", "instructors", "course_overall", "course_overall_fas_avg", "workload_hrs_mean",
                 "recommend_mean", "responded", "enroll_reasons")
         cat = dict(c.get("catalog") or {})
+        if filters:
+            cat["offered"] = [{**o, "sections": [sec for sec in o["sections"] if self.section_fits(sec, filters)]}
+                              for o in cat.get("offered", [])
+                              if not filters.get("term") or o["term"] == filters["term"]]
         if cat.get("description"):
             cat["description"] = cat["description"][:700]
         if cat.get("class_notes"):
@@ -429,14 +439,14 @@ class CourseDB:
                 return c
         return None
 
-    def card(self, code):
+    def card(self, code, filters=None):
         """Data the UI needs to render a course panel."""
         c = self.lookup(code)
         if not c:
             return None
         o = self._q(c)
         cat = c.get("catalog") or {}
-        term, sec = self._next(c)
+        term, sec = self._next(c, filters)
         return {
             "code": c["code"],
             "title": c["title"],
