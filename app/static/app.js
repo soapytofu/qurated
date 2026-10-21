@@ -236,7 +236,7 @@ async function send(message) {
     sessionId = res.headers.get("X-Session-Id") || sessionId;
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
-    let buf = "";
+    let buf = "", completed = false;
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -275,11 +275,14 @@ async function send(message) {
           textEl = null;
         } else if (ev.type === "usage") {
           note("usage", `${ev.searched ? "Searched courses" : "Answered directly"} · ${progress.seconds()}s`);
+        } else if (ev.type === "done") {
+          completed = true;
         } else if (ev.type === "error") {
           note("error", ev.text);
         }
       }
     }
+    if (!completed) note("error", "The answer was interrupted. Please try again.");
   } catch (e) {
     if (e.message !== "signed out") note("error", "Lost connection to the Qurated server. Is it running?");
   } finally {
@@ -322,10 +325,13 @@ document.addEventListener("click", (e) => {
 // preferences
 $("#open-prefs").addEventListener("click", () => openSheet("#prefs"));
 $("#cta-prefs").addEventListener("click", () => openSheet("#prefs"));
-let prefsTimer = null;
+let prefsTimer = null, prefsSave = Promise.resolve();
 function savePrefs() {  // debounced save to the account
   clearTimeout(prefsTimer);
-  prefsTimer = setTimeout(() => putJSON("/api/account/prefs", prefs).catch(saveError), 500);
+  prefsTimer = setTimeout(() => {
+    const snapshot = { ...prefs };
+    prefsSave = prefsSave.then(() => putJSON("/api/account/prefs", snapshot)).catch(saveError);
+  }, 500);
 }
 function fillPrefs() {
   $$("#prefs [name]").forEach((el) => { if (prefs[el.name] != null && el.type !== "range") el.value = prefs[el.name]; });
@@ -410,13 +416,22 @@ async function loadAccount() {
   prefs = acct.prefs || {};
   // Older versions saved favorites/preferences only in this browser; move them to the account once.
   const oldFavs = store.get("hua.favorites", null), oldPrefs = store.get("hua.prefs", null);
-  if (oldFavs) {
-    for (const [code, card] of Object.entries(oldFavs)) {
-      if (!favorites[code]) { favorites[code] = card; putJSON(`/api/account/favorites/${enc(code)}`, card).catch(() => {}); }
+  try {
+    if (oldFavs) {
+      for (const [code, card] of Object.entries(oldFavs)) {
+        if (!favorites[code]) {
+          await putJSON(`/api/account/favorites/${enc(code)}`, card);
+          favorites[code] = card;
+        }
+      }
+      localStorage.removeItem("hua.favorites");
     }
-  }
-  if (oldPrefs && !Object.keys(prefs).length) { prefs = oldPrefs; putJSON("/api/account/prefs", prefs).catch(saveError); }
-  try { localStorage.removeItem("hua.favorites"); localStorage.removeItem("hua.prefs"); } catch {}
+    if (oldPrefs && !Object.keys(prefs).length) {
+      await putJSON("/api/account/prefs", oldPrefs);
+      prefs = oldPrefs;
+    }
+    localStorage.removeItem("hua.prefs");
+  } catch (err) { saveError(err); }
   renderFavs(); renderTaken(); fillPrefs();
   Object.keys(favorites).forEach(syncCardButtons);
 }
