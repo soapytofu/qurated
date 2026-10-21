@@ -39,8 +39,16 @@ async function api(path, opts = {}) {
   if (res.status === 401) { location.replace("/"); throw new Error("signed out"); }
   return res;
 }
-const putJSON = (path, body) => api(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body ?? {}) });
-const del = (path) => api(path, { method: "DELETE" });
+async function checkedWrite(path, options) {
+  const res = await api(path, options);
+  if (!res.ok) throw new Error("Your changes weren't saved. Please try again.");
+  return res;
+}
+function saveError(err) {
+  if (err.message !== "signed out") window.alert(err.message || "Your changes weren't saved. Please try again.");
+}
+const putJSON = (path, body) => checkedWrite(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body ?? {}) });
+const del = (path) => checkedWrite(path, { method: "DELETE" });
 const enc = encodeURIComponent;
 
 // ---------- views: home (Apple-style landing) vs. conversation ----------
@@ -116,20 +124,37 @@ function syncCardButtons(code) {
   });
 }
 
-function toggleFav(card) {
+const pendingFavorites = new Set(), pendingTaken = new Set();
+async function toggleFav(card) {
+  if (pendingFavorites.has(card.code)) return;
+  pendingFavorites.add(card.code);
+  const previous = favorites[card.code];
   const on = !favorites[card.code];
   if (on) favorites[card.code] = card; else delete favorites[card.code];
   syncCardButtons(card.code);
   renderFavs();
-  (on ? putJSON(`/api/account/favorites/${enc(card.code)}`, card) : del(`/api/account/favorites/${enc(card.code)}`)).catch(() => {});
+  try {
+    await (on ? putJSON(`/api/account/favorites/${enc(card.code)}`, card) : del(`/api/account/favorites/${enc(card.code)}`));
+  } catch (err) {
+    if (previous) favorites[card.code] = previous; else delete favorites[card.code];
+    syncCardButtons(card.code); renderFavs(); saveError(err);
+  } finally { pendingFavorites.delete(card.code); }
 }
 
-function toggleTaken(code, title) {
+async function toggleTaken(code, title) {
+  if (pendingTaken.has(code)) return;
+  pendingTaken.add(code);
+  const previous = taken.get(code);
   const on = !taken.has(code);
   if (on) taken.set(code, title || ""); else taken.delete(code);
   syncCardButtons(code);
   renderTaken();
-  (on ? putJSON(`/api/account/taken/${enc(code)}`) : del(`/api/account/taken/${enc(code)}`)).catch(() => {});
+  try {
+    await (on ? putJSON(`/api/account/taken/${enc(code)}`) : del(`/api/account/taken/${enc(code)}`));
+  } catch (err) {
+    if (on) taken.delete(code); else taken.set(code, previous);
+    syncCardButtons(code); renderTaken(); saveError(err);
+  } finally { pendingTaken.delete(code); }
 }
 
 // ---------- chat ----------
@@ -205,7 +230,7 @@ async function send(message) {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      note("error", body.detail || `Request failed (${res.status}).`);
+      note("error", typeof body.detail === "string" ? body.detail : "Please enter a question of at most 2,000 characters.");
       return;
     }
     sessionId = res.headers.get("X-Session-Id") || sessionId;
@@ -268,7 +293,7 @@ async function send(message) {
 
 $("#composer").addEventListener("submit", (e) => { e.preventDefault(); send($("#input").value); });
 $$(".try").forEach((b) => b.addEventListener("click", () => send(b.textContent.replace("›", ""))));
-$("#new-chat").addEventListener("click", () => { sessionId = null; $("#thread").innerHTML = ""; showHome(); scrollTo({ top: 0 }); });
+$("#new-chat").addEventListener("click", () => { if (busy) return; sessionId = null; $("#thread").innerHTML = ""; showHome(); scrollTo({ top: 0 }); });
 $("#nav-ask").addEventListener("click", () => { if (!document.body.classList.contains("chatting")) scrollTo({ top: 0, behavior: "smooth" }); $("#input").focus(); });
 $("#cta-ask").addEventListener("click", () => $("#input").focus());
 $("#nav-how").addEventListener("click", () => { showHome(); $("#how").scrollIntoView({ behavior: "smooth" }); });
@@ -300,7 +325,7 @@ $("#cta-prefs").addEventListener("click", () => openSheet("#prefs"));
 let prefsTimer = null;
 function savePrefs() {  // debounced save to the account
   clearTimeout(prefsTimer);
-  prefsTimer = setTimeout(() => putJSON("/api/account/prefs", prefs).catch(() => {}), 500);
+  prefsTimer = setTimeout(() => putJSON("/api/account/prefs", prefs).catch(saveError), 500);
 }
 function fillPrefs() {
   $$("#prefs [name]").forEach((el) => { if (prefs[el.name] != null && el.type !== "range") el.value = prefs[el.name]; });
@@ -390,7 +415,7 @@ async function loadAccount() {
       if (!favorites[code]) { favorites[code] = card; putJSON(`/api/account/favorites/${enc(code)}`, card).catch(() => {}); }
     }
   }
-  if (oldPrefs && !Object.keys(prefs).length) { prefs = oldPrefs; putJSON("/api/account/prefs", prefs).catch(() => {}); }
+  if (oldPrefs && !Object.keys(prefs).length) { prefs = oldPrefs; putJSON("/api/account/prefs", prefs).catch(saveError); }
   try { localStorage.removeItem("hua.favorites"); localStorage.removeItem("hua.prefs"); } catch {}
   renderFavs(); renderTaken(); fillPrefs();
   Object.keys(favorites).forEach(syncCardButtons);
@@ -398,8 +423,15 @@ async function loadAccount() {
 loadAccount();
 
 // ---------- course detail ----------
+function safeExternalURL(value) {
+  try {
+    const url = new URL(value);
+    return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password ? url.href : null;
+  } catch { return null; }
+}
 function catalogHTML(cat) {
   if (!cat) return '<p class="meta">Not in the Fall 2026 / Spring 2027 catalog.</p>';
+  const syllabus = safeExternalURL(cat.syllabus_url);
   const facts = [["Gen Ed", cat.gen_ed], ["Divisional", cat.divisional], ["QRD", cat.qrd], ["Level", cat.level],
     ["Format", cat.component], ["Grading", cat.grading], ["Consent", cat.consent], ["Cap", cat.enrollment_cap]]
     .filter(([, v]) => v != null && v !== "");
@@ -412,7 +444,7 @@ function catalogHTML(cat) {
     ${cat.description ? `<p class="desc">${esc(cat.description)}</p>` : ""}
     <div class="offers">${offered}</div>
     ${facts.length ? `<dl class="facts">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>` : ""}
-    ${cat.syllabus_url ? `<p><a class="link" href="${esc(cat.syllabus_url)}" target="_blank" rel="noopener">View syllabus ›</a></p>` : ""}`;
+    ${syllabus ? `<p><a class="link" href="${esc(syllabus)}" target="_blank" rel="noopener">View syllabus ›</a></p>` : ""}`;
 }
 async function openDetail(code) {
   $("#detail-body").innerHTML = '<p class="meta">Loading…</p>';
@@ -445,11 +477,11 @@ async function openDetail(code) {
     </div>`;
   $("#d-fav").addEventListener("click", async () => {
     const card = favorites[c.code] || (await api("/api/cards", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify([c.code]) }).then((r) => r.json()))[0];
-    if (card) toggleFav(card);
+    if (card) await toggleFav(card);
     $("#d-fav").textContent = favorites[c.code] ? "♥ Favorited" : "♡ Favorite";
   });
-  $("#d-taken").addEventListener("click", () => {
-    toggleTaken(c.code, c.title);
+  $("#d-taken").addEventListener("click", async () => {
+    await toggleTaken(c.code, c.title);
     $("#d-taken").textContent = taken.has(c.code) ? "✓ Taken" : "I've taken this";
   });
 }
