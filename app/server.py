@@ -6,6 +6,7 @@ import json
 import os
 import re
 import time
+import threading
 import uuid
 from collections import defaultdict
 from datetime import date
@@ -139,18 +140,37 @@ TOOLS = [
 ]
 
 
+_reload_lock = threading.Lock()
+_data_signature = None
+_last_reload_check = 0.0
+
+
+def _source_signature():
+    paths = list(REPORTS_DIR.glob("*.json")) + list((CATALOG_DIR / "details").glob("*.json"))
+    paths += [TAGS_FILE, CATALOG_DIR / "sections.jsonl"]
+    signature = []
+    for path in sorted(paths):
+        try:
+            stat = path.stat()
+            signature.append((str(path), stat.st_mtime_ns, stat.st_size))
+        except FileNotFoundError:
+            continue
+    return tuple(signature)
+
+
 def _maybe_reload():
-    """Pick up newly scraped reports while the scraper is still running."""
-    global _report_count
-    n = len(list(REPORTS_DIR.glob("*.json")))
-    tags_mtime = TAGS_FILE.stat().st_mtime if TAGS_FILE.exists() else 0
-    sections = CATALOG_DIR / "sections.jsonl"
-    cat_mtime = max([sections.stat().st_mtime if sections.exists() else 0]
-                    + [(CATALOG_DIR / "details").stat().st_mtime if (CATALOG_DIR / "details").exists() else 0])
-    if n != _report_count or tags_mtime != db.tags_mtime or cat_mtime != getattr(db, "loaded_catalog_mtime", None):
-        db.loaded_catalog_mtime = cat_mtime
-        db.reload()
-        _report_count = n
+    """Publish a complete replacement index; requests never see a half-built BM25 index."""
+    global db, _data_signature, _last_reload_check
+    with _reload_lock:
+        now = time.monotonic()
+        if now - _last_reload_check < 5:
+            return
+        signature = _source_signature()
+        if signature != _data_signature:
+            replacement = CourseDB()
+            db = replacement
+            _data_signature = signature
+        _last_reload_check = now
 
 
 def _verified_quote(code, quote):

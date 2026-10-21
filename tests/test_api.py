@@ -36,3 +36,24 @@ def test_stream_failure_is_generic_and_releases_state(monkeypatch):
     assert 'private-api-key' not in result
     assert result.count('"type": "done"') == 1
     assert server.chat_state.entries[key]['busy'] is False
+
+
+def test_reload_detects_in_place_edits_and_preserves_old_index_on_failure(tmp_path, monkeypatch):
+    reports = tmp_path / 'reports'; reports.mkdir()
+    catalog = tmp_path / 'catalog'; catalog.mkdir()
+    report = reports / 'one.json'; report.write_text('{}')
+    monkeypatch.setattr(server, 'REPORTS_DIR', reports)
+    monkeypatch.setattr(server, 'CATALOG_DIR', catalog)
+    monkeypatch.setattr(server, 'TAGS_FILE', tmp_path / 'tags.json')
+    first = server._source_signature()
+    report.write_text('{"updated": true}')
+    assert server._source_signature() != first
+    original = server.db
+    monkeypatch.setattr(server, '_last_reload_check', 0)
+    def fail():
+        raise ValueError('bad source')
+    monkeypatch.setattr(server, 'CourseDB', fail)
+    import pytest
+    with pytest.raises(ValueError):
+        server._maybe_reload()
+    assert server.db is original
