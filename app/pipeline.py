@@ -66,6 +66,12 @@ def is_follow_up(message, history):
 
 def plan(db, message, preferences, history=()):
     """Instant heuristic plan (beat a Haiku planner on latency at near-equal quality)."""
+    if is_follow_up(message, history) and re.search(
+            r"\b(more (options|courses|classes)|other (options|courses|classes)|alternatives|something else)\b", message, re.I):
+        previous = previous_picks(history)
+        titles = [(db.lookup(code) or {}).get("title", "") for code in previous]
+        return {"queries": [" ".join(titles) or message], "codes": [], "exclude": previous,
+                "max_workload": (preferences or {}).get("max_workload_hrs") or 0, "term": "any", "gen_ed": False}
     if is_follow_up(message, history):
         # "Which of those...": answer over the courses we just recommended, no new search.
         return {"queries": [], "codes": previous_picks(history)[:6], "max_workload": 0, "term": "any", "gen_ed": False}
@@ -98,6 +104,7 @@ def describe_filters(f):
 
 
 def retrieve(db, p, taken=frozenset(), k=8, filters=None):
+    taken = frozenset(taken) | frozenset(p.get("exclude", []))
     dept = None
     filters = dict(filters or {})
     if p["term"] in UPCOMING:
