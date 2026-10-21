@@ -1,19 +1,22 @@
 """Per-student saved data (favorites, courses taken, preferences) in SQLite."""
 import json
+import os
 import sqlite3
 import threading
 import time
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "data" / "qurated.db"
+DB_PATH = Path(os.environ.get("QURATED_DB_PATH", Path(__file__).parent / "data" / "qurated.db"))
 _lock = threading.Lock()  # FastAPI runs sync endpoints in a thread pool
 
 
 def _connect():
-    DB_PATH.parent.mkdir(exist_ok=True)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript("""
+        CREATE TABLE IF NOT EXISTS daily_usage (email TEXT, day TEXT, used INTEGER NOT NULL,
+                                                PRIMARY KEY (email, day));
         CREATE TABLE IF NOT EXISTS users (email TEXT PRIMARY KEY, name TEXT, created_at INTEGER, last_seen INTEGER);
         CREATE TABLE IF NOT EXISTS favorites (email TEXT, code TEXT, card_json TEXT, added_at INTEGER,
                                               PRIMARY KEY (email, code));
@@ -72,3 +75,21 @@ def prefs(email):
 def set_prefs(email, data):
     _exec("INSERT INTO prefs VALUES (?, ?, ?) ON CONFLICT(email) DO UPDATE SET json=excluded.json, updated_at=excluded.updated_at",
           (email, json.dumps(data), int(time.time())))
+
+
+def questions_used(email, day):
+    rows = _exec("SELECT used FROM daily_usage WHERE email=? AND day=?", (email, str(day)))
+    return rows[0][0] if rows else 0
+
+
+def reserve_question(email, day, limit):
+    """One atomic SQLite statement enforces quotas across threads and server workers."""
+    if limit <= 0:
+        return False
+    with _lock:
+        with _conn:
+            cur = _conn.execute(
+                "INSERT INTO daily_usage VALUES (?, ?, 1) "
+                "ON CONFLICT(email, day) DO UPDATE SET used=used+1 WHERE used < ?",
+                (email, str(day), limit))
+            return cur.rowcount == 1
