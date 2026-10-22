@@ -49,6 +49,9 @@ def validate_answer(value, candidates, taken, db, verify_quote):
         if any(not isinstance(v, str) for v in pick.values()):
             raise ValueError('invalid pick values')
         code, reason, quote = pick['code'], pick['reason'], pick['quote']
+        resolved = db.lookup(code)
+        if resolved:
+            code = resolved['code']
         if code not in allowed or db.is_taken(code, taken):
             raise ValueError('unsupported course')
         if not reason.strip() or len(reason) > 600 or len(quote) > 300:
