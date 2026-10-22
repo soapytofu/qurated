@@ -8,6 +8,8 @@ import queue
 import re
 import threading
 import time
+from itertools import zip_longest
+import search_planner
 
 from courses import UPCOMING, GEN_EDS
 from guardrails import POLICY, SAFE_FAILURE, validate_answer
@@ -65,7 +67,7 @@ def is_follow_up(message, history):
 
 
 def plan(db, message, preferences, history=()):
-    """Instant heuristic plan (beat a Haiku planner on latency at near-equal quality)."""
+    """Extract deterministic constraints before optional semantic query expansion."""
     if is_follow_up(message, history) and re.search(
             r"\b(more (options|courses|classes)|other (options|courses|classes)|alternatives|something else)\b", message, re.I):
         previous = previous_picks(history)
@@ -92,9 +94,12 @@ def plan(db, message, preferences, history=()):
     # Term words are handled by the term filter; as search keywords they'd match thousands of reviews.
     query = re.sub(r"\b(spring|fall|autumn|20\d\d|semester|term|next|this|upcoming)\b", " ", message, flags=re.I)
     query = re.sub(r"\bgen ?eds?\b|general education", " ", query, flags=re.I) if re.search(r"\bgen ?eds?\b|general education", m) else query
+    subject = "COMPSCI" if (re.search(r"\b(?:CS|COMPSCI|computer science)\b", message, re.I)
+                            and not re.search(r"\b(not|outside|except|avoid|or)\b", message, re.I)) else None
+    query = re.sub(r"\bCS\b", "computer science COMPSCI", query, flags=re.I)
     return {"queries": [" ".join(query.split()) or message], "codes": codes, "max_workload": 6 if light else (pref_cap or 0), "term": term,
             "gen_ed": bool(category or re.search(r"\bgen ?eds?\b|general education", m)),
-            "gen_ed_category": category, "code_suggestions": suggestions}
+            "gen_ed_category": category, "code_suggestions": suggestions, "subject": subject}
 
 
 def describe_filters(f):
@@ -113,6 +118,10 @@ def retrieve(db, p, taken=frozenset(), k=8, filters=None):
     taken = frozenset(taken) | frozenset(p.get("exclude", []))
     dept = None
     filters = dict(filters or {})
+    if p.get("subject"):
+        if filters.get("subject") and filters["subject"] != p["subject"]:
+            return []
+        filters["subject"] = p["subject"]
     if p.get("gen_ed_category"):
         if filters.get("gen_ed") and filters["gen_ed"] != p["gen_ed_category"]:
             return []  # Do not silently replace a conflicting explicit filter.
@@ -135,8 +144,11 @@ def retrieve(db, p, taken=frozenset(), k=8, filters=None):
         # Keywords + filters found nothing: fall back to the best-rated courses that satisfy the filters.
         lists = [[db.brief(c["code"], filters=filters) for c in db.browse(filters, exclude=taken, limit=10)["cards"]]]
     seen, out = set(), []
-    for lst in lists:
+    # Interleave query rankings so a literal query cannot crowd out semantic matches.
+    for lst in zip_longest(*lists):
         for b in lst:
+            if b is None:
+                continue
             if b["code"] in seen:
                 continue
             if p["term"] in UPCOMING and not (isinstance(b["offered"], list) and p["term"] in b["offered"]):
@@ -249,6 +261,7 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
     client = client.with_options(timeout=30.0, max_retries=1)
     t0 = time.perf_counter()
     p, cands = None, []
+    planner_cost = 0.0
     if search:
         if not db.courses:
             yield sse({"type": "error", "text": "The course catalog has not been loaded yet. Course recommendations will be available after the catalog is imported."})
@@ -259,6 +272,9 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
                          for raw, options in p["code_suggestions"].items()]
             yield sse({"type": "text", "delta": " ".join(questions)})
             return 0.0, time.perf_counter() - t0
+        yield sse({"type": "status", "text": "Understanding your course request"})
+        p = search_planner.expand(client, p, message, history)
+        planner_cost = p.get("planner_cost", 0.0)
         yield sse({"type": "status", "text": "Searching courses"})
         filters = dict(filters or {})
         if filters.get("term"):
@@ -270,7 +286,7 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
               f"category={p.get('gen_ed_category') or 'any'}", flush=True)
         if not cands:
             yield sse({"type": "text", "delta": "I couldn't find matching courses in the loaded catalog. Try changing your filters or search terms; this does not mean no such courses exist."})
-            return 0.0, time.perf_counter() - t0
+            return planner_cost, time.perf_counter() - t0
     yield sse({"type": "status", "text": "Preparing a grounded answer"})
     # Structured data keeps source text separate from trusted system instructions.
     content = json.dumps({"request": message, "student_context": context_line(preferences, favorites, taken),
@@ -294,12 +310,12 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
         stream.close()
     if final is None or final.stop_reason != "end_turn":
         yield sse({"type": "error", "text": SAFE_FAILURE})
-        return _cost(final.usage) if final else 0, time.perf_counter() - t0
+        return planner_cost + (_cost(final.usage) if final else 0), time.perf_counter() - t0
     try:
         picks, advice = validate_answer(json.loads(buf), cands, taken, db, verify_quote)
     except (ValueError, TypeError, KeyError):
         yield sse({"type": "error", "text": SAFE_FAILURE})
-        return _cost(final.usage), time.perf_counter() - t0
+        return planner_cost + _cost(final.usage), time.perf_counter() - t0
     for pick in picks:
         card = db.card(pick["code"], filters=filters)
         if card:
@@ -309,7 +325,7 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
     if p and not p["queries"] and p["codes"]:
         summary += "\n(Discussing: " + ", ".join(c["code"] for c in cands) + ")"
     history += [{"role": "user", "content": message}, {"role": "assistant", "content": summary}]
-    return _cost(final.usage), time.perf_counter() - t0
+    return planner_cost + _cost(final.usage), time.perf_counter() - t0
 
 
 def _cost(u):
