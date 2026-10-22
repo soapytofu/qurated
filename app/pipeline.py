@@ -9,7 +9,7 @@ import re
 import threading
 import time
 
-from courses import UPCOMING
+from courses import UPCOMING, GEN_EDS
 from guardrails import POLICY, SAFE_FAILURE, validate_answer
 
 ANSWER_MODEL = "claude-sonnet-5-5"
@@ -76,6 +76,9 @@ def plan(db, message, preferences, history=()):
         # "Which of those...": answer over the courses we just recommended, no new search.
         return {"queries": [], "codes": previous_picks(history)[:6], "max_workload": 0, "term": "any", "gen_ed": False}
     m = message.lower()
+    normalized = re.sub(r"[^a-z0-9]+", " ", m.replace("&", "and")).strip()
+    category = next((name for name in GEN_EDS if
+                     re.sub(r"[^a-z0-9]+", " ", name.lower()).strip() in normalized), None)
     term = "2027 Spring" if "spring" in m else "2026 Fall" if "fall" in m else "any"
     light = re.search(r"\b(light|easy|chill|less work|low workload|not much work|manageable)\b", m)
     pref_cap = (preferences or {}).get("max_workload_hrs") or 0
@@ -88,7 +91,8 @@ def plan(db, message, preferences, history=()):
     query = re.sub(r"\b(spring|fall|autumn|20\d\d|semester|term|next|this|upcoming)\b", " ", message, flags=re.I)
     query = re.sub(r"\bgen ?eds?\b|general education", " ", query, flags=re.I) if re.search(r"\bgen ?eds?\b|general education", m) else query
     return {"queries": [" ".join(query.split()) or message], "codes": codes, "max_workload": 6 if light else (pref_cap or 0), "term": term,
-            "gen_ed": bool(re.search(r"\bgen ?eds?\b|general education", m))}
+            "gen_ed": bool(category or re.search(r"\bgen ?eds?\b|general education", m)),
+            "gen_ed_category": category}
 
 
 def describe_filters(f):
@@ -107,6 +111,10 @@ def retrieve(db, p, taken=frozenset(), k=8, filters=None):
     taken = frozenset(taken) | frozenset(p.get("exclude", []))
     dept = None
     filters = dict(filters or {})
+    if p.get("gen_ed_category"):
+        if filters.get("gen_ed") and filters["gen_ed"] != p["gen_ed_category"]:
+            return []  # Do not silently replace a conflicting explicit filter.
+        filters["gen_ed"] = p["gen_ed_category"]
     if p["term"] in UPCOMING:
         filters.setdefault("term", p["term"])
     if p["gen_ed"] and not filters.get("gen_ed"):
@@ -240,6 +248,9 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
     t0 = time.perf_counter()
     p, cands = None, []
     if search:
+        if not db.courses:
+            yield sse({"type": "error", "text": "The course catalog has not been loaded yet. Course recommendations will be available after the catalog is imported."})
+            return 0.0, time.perf_counter() - t0
         p = plan(db, message, preferences, history)
         yield sse({"type": "status", "text": "Searching courses"})
         filters = dict(filters or {})
@@ -248,6 +259,11 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
         elif p["term"] in UPCOMING:
             filters["term"] = p["term"]
         cands = retrieve(db, p, frozenset(taken), filters=filters)
+        print(f"[retrieval] loaded={len(db.courses)} candidates={len(cands)} "
+              f"category={p.get('gen_ed_category') or 'any'}", flush=True)
+        if not cands:
+            yield sse({"type": "text", "delta": "I couldn't find matching courses in the loaded catalog. Try changing your filters or search terms; this does not mean no such courses exist."})
+            return 0.0, time.perf_counter() - t0
     yield sse({"type": "status", "text": "Preparing a grounded answer"})
     # Structured data keeps source text separate from trusted system instructions.
     content = json.dumps({"request": message, "student_context": context_line(preferences, favorites, taken),

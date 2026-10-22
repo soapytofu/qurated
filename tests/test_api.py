@@ -88,3 +88,21 @@ def test_authenticated_chat_returns_validated_card(monkeypatch):
             assert events[-1]['type'] == 'done'
     finally:
         server.app.dependency_overrides.clear()
+
+
+def test_missing_catalog_does_not_charge_or_call_model(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(server, 'db', SimpleNamespace(courses={}))
+    monkeypatch.setattr(server, '_maybe_reload', lambda: None)
+    def unexpected(*args, **kwargs):
+        raise AssertionError('must not charge or call model')
+    monkeypatch.setattr(server.store, 'reserve_question', unexpected)
+    monkeypatch.setattr(server, 'fast_chat_stream', unexpected)
+    server.app.dependency_overrides[server.current_user] = lambda: {'email': 'test@example.com'}
+    try:
+        with TestClient(server.app) as client:
+            response = client.post('/api/chat', json={'message': 'Geneds for aesthetics and culture?'})
+        assert response.status_code == 503
+        assert 'catalog has not been loaded' in response.json()['detail']
+    finally:
+        server.app.dependency_overrides.clear()

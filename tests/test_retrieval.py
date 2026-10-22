@@ -67,3 +67,36 @@ def test_more_options_searches_new_candidates():
     assert results and not {'TEST 1', 'TEST 2'} & {c['code'] for c in results}
     comparison = plan(db, 'Which of these has more workload?', {}, history)
     assert comparison['codes'] == ['TEST 1', 'TEST 2']
+
+
+def test_named_gen_ed_category_is_required():
+    from pipeline import plan
+    db = database()
+    db.courses['TEST 0']['catalog']['gen_ed'] = 'Aesthetics and Culture'
+    db._build_index()
+    for question in ['Any aesthetics and culture recommendations?',
+                     'Geneds to fulfill aesthetics and culture?',
+                     'Aesthetics & Culture gen eds']:
+        p = plan(db, question, {})
+        assert p['gen_ed_category'] == 'Aesthetics and Culture'
+        assert [c['code'] for c in retrieve(db, p)] == ['TEST 0']
+        assert retrieve(db, p, taken={'TEST 0'}) == []
+        assert retrieve(db, p, filters={'gen_ed': 'Ethics and Civics'}) == []
+
+
+def test_empty_catalog_and_no_matches_do_not_call_answer_model(monkeypatch):
+    import pipeline
+    from types import SimpleNamespace
+    monkeypatch.setattr(pipeline, 'hedged_stream', lambda *a: (_ for _ in ()).throw(AssertionError('model called')))
+    for empty in (True, False):
+        db = database()
+        if empty:
+            db.courses = {}
+            db._build_index()
+        history = []
+        events = list(pipeline.stream_answer(SimpleNamespace(with_options=lambda **kw: None),
+            db, history, 'Aesthetics and Culture Gen Eds', {}, [], [], True,
+            lambda x: x, lambda x: None, lambda *a: None))
+        texts = ' '.join(e.get('text', e.get('delta', '')) for e in events)
+        assert ('not been loaded' in texts) if empty else ('loaded catalog' in texts)
+        assert not history

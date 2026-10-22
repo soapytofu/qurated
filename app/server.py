@@ -627,6 +627,9 @@ def browse(req: BrowseRequest, user=Depends(current_user)):
 
 @app.post("/api/chat")
 def chat(req: ChatRequest, user=Depends(current_user)):
+    _maybe_reload()
+    if not db.courses:
+        raise HTTPException(503, "The course catalog has not been loaded yet. Course recommendations will be available after the catalog is imported.")
     key = (user["email"], date.today())
     if not store.reserve_question(*key, DAILY_LIMIT):
         raise HTTPException(429, f"You've hit today's limit of {DAILY_LIMIT} questions. Come back tomorrow!")
