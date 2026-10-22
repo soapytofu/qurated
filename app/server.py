@@ -13,7 +13,7 @@ from datetime import date
 from pathlib import Path
 
 import anthropic
-import httpx2
+import openai
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -25,6 +25,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 import db as store
 import pipeline
+import llm
 from guardrails import has_sensitive_text, PRIVACY_REPLY
 from chat_state import ChatState
 from request_safety import RequestSafetyMiddleware
@@ -35,10 +36,8 @@ load_dotenv(Path(__file__).parent / ".env")
 MODEL = "claude-sonnet-5-5"
 # $ per million tokens for MODEL, used for the per-reply cost line.
 PRICE = {"input": 2.00, "output": 10.00, "cache_write": 2.50, "cache_read": 0.20}
-# Force IPv4: on some networks (e.g. campus Wi-Fi) IPv6 to the API silently hangs ~16s before falling back,
-# which showed up as random 17-20s "API stalls". IPv4 connects in ~20ms.
-client = anthropic.Anthropic(http_client=anthropic.DefaultHttpxClient(
-    transport=httpx2.HTTPTransport(local_address="0.0.0.0")))
+PROVIDER = llm.provider_name()
+client = llm.make_client()
 db = CourseDB()
 sessions: dict[tuple, list] = {}  # (user email, session id) -> append-only message history
 prior_questions: dict[tuple, list] = {}  # same key -> the student's earlier messages, for the router
@@ -268,13 +267,13 @@ def needs_q_data(message, prior_questions):
                 history=" | ".join(prior_questions[-3:]) or "(nothing yet)", message=message)}],
             output_config={"format": {"type": "json_schema", "schema": ROUTER_SCHEMA}},
         )
-        cost = (r.usage.input_tokens * 1.0 + r.usage.output_tokens * 5.0) / 1e6  # Haiku 4.5 $/token
+        cost = 0.0 if PROVIDER == "openai" else (r.usage.input_tokens * 1.0 + r.usage.output_tokens * 5.0) / 1e6
         if r.stop_reason != "end_turn":
             return True, cost
         text = next(b.text for b in r.content if b.type == "text")
         return bool(json.loads(text)["needs_q_data"]), cost
     except Exception as e:
-        print(f"[router] failed, defaulting to search: {e}", flush=True)
+        print(f"[router] failed, defaulting to search: {type(e).__name__}", flush=True)
         return True, 0.0
 
 
@@ -400,7 +399,7 @@ def chat_stream(session_id, message, preferences, favorites, taken=(), use_prefe
 
 
 def fast_chat_stream(session_key, message, preferences, favorites, taken=(), filters=None):
-    """Production path: router -> server-side retrieval -> one streamed Sonnet call (see pipeline.py)."""
+    """Production path: router -> server-side retrieval -> one streamed provider call (see pipeline.py)."""
     entry = chat_state.acquire(session_key)
     if entry is None:
         yield sse({"type": "error", "text": "This chat is busy. Please try again shortly."})
@@ -421,6 +420,10 @@ def _fast_chat_stream(entry, message, preferences, favorites, taken, filters):
     try:
         _maybe_reload()
         yield from _run_fast_chat(history, prior, message, preferences, favorites, taken, filters)
+    except (anthropic.AuthenticationError, openai.AuthenticationError):
+        yield sse({"type": "error", "text": "The AI provider rejected the API key. Check the selected provider and key in app/.env, then restart."})
+    except (anthropic.RateLimitError, openai.RateLimitError):
+        yield sse({"type": "error", "text": "The AI provider is at its usage limit. Check API billing or try again later."})
     except Exception as e:
         print(f"[chat] failed: {type(e).__name__}", flush=True)
         yield sse({"type": "error", "text": "Unable to answer right now. Please try again shortly."})
@@ -428,6 +431,10 @@ def _fast_chat_stream(entry, message, preferences, favorites, taken, filters):
 
 
 def _run_fast_chat(history, prior, message, preferences, favorites, taken, filters):
+    key_name = "OPENAI_API_KEY" if PROVIDER == "openai" else "ANTHROPIC_API_KEY"
+    if not os.getenv(key_name, "").strip():
+        yield sse({"type": "error", "text": f"Add {key_name} to app/.env and restart the app."})
+        return
     if pipeline.is_follow_up(message, history):
         search, router_cost = True, 0.0  # compare the courses we just showed
     else:
@@ -436,7 +443,8 @@ def _run_fast_chat(history, prior, message, preferences, favorites, taken, filte
     cost, secs = yield from pipeline.stream_answer(client, db, history, message, preferences, favorites,
                                                    list(taken), search, sse, db.card, _verified_quote,
                                                    filters=filters)
-    print(f"[usage] fast search={search} {secs:.1f}s ≈ ${cost + router_cost:.4f}", flush=True)
+    cost_label = "cost unavailable (see OpenAI dashboard)" if PROVIDER == "openai" else f"≈ ${cost + router_cost:.4f}"
+    print(f"[usage] provider={PROVIDER} search={search} {secs:.1f}s {cost_label}", flush=True)
     yield sse({"type": "usage", "searched": search})
 
 

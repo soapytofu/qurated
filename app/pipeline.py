@@ -290,5 +290,7 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
 
 
 def _cost(u):
+    if getattr(u, "provider", None) == "openai":
+        return 0.0  # Not a price estimate; server labels OpenAI cost as unavailable.
     inp = (u.input_tokens or 0) + (u.cache_read_input_tokens or 0) + (u.cache_creation_input_tokens or 0)
     return (inp * PRICE[0] + (u.output_tokens or 0) * PRICE[1]) / 1e6
