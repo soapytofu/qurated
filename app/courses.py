@@ -18,11 +18,45 @@ NO_Q = {"course_overall": None, "course_overall_fas_avg": None, "workload_hrs_me
 TERM_ORDER = {"Spring": 0, "Fall": 1}  # Fall comes after Spring within a calendar year
 
 
+# (field, display label, report section, question prefix); all are 1–5 means.
+EXTRA_Q_SCORES = (
+    ('materials', 'Course materials', 'course_questions', 'course materials'),
+    ('assignments', 'Assignments', 'course_questions', 'assignments ('),
+    ('course_feedback', 'Feedback on coursework', 'course_questions', 'feedback you received'),
+    ('sections', 'Section component', 'course_questions', 'section component'),
+    ('accessibility', 'Instructor accessibility', 'instructors', 'is accessible outside'),
+    ('enthusiasm', 'Generates enthusiasm', 'instructors', 'generates enthusiasm'),
+    ('discussion', 'Encourages discussion and participation', 'instructors', 'facilitates discussion'),
+    ('instructor_feedback', 'Useful instructor feedback', 'instructors', 'gives useful feedback'),
+    ('timely_returns', 'Timely assignment returns', 'instructors', 'returns assignments'),
+    ('open_mindedness', 'Students listen with an open mind', 'other_questions', 'in this course, most students listen'),
+    ('expressing_views', 'Comfort expressing controversial views', 'other_questions', 'in this course (including sections), i feel comfortable'),
+)
+
+
+def additional_scores(qreport):
+    scores = {}
+    for field, _, section, prefix in EXTRA_Q_SCORES:
+        if section == "instructors":
+            continue
+        scores[field] = None
+        for label, answer in qreport.get(section, {}).items():
+            if label.lower().startswith(prefix):
+                try:
+                    value = float(answer["mean"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if math.isfinite(value) and 1 <= value <= 5:
+                    scores[field] = value
+    return scores
+
+
 def instructor_scores(qreport):
     """Response-weighted scores across instructors in one report, never across terms."""
     scores = {}
     for field, prefix in (("instructor_score", "evaluate your instructor overall"),
-                          ("effective_lectures", "gives effective lectures or presentations")):
+                          ("effective_lectures", "gives effective lectures or presentations"),
+                          *((field, prefix) for field, _, section, prefix in EXTRA_Q_SCORES if section == "instructors")):
         weighted = count = 0.0
         for instructor in qreport.get("instructors", []):
             for label, answer in instructor.get("questions", {}).items():
@@ -110,7 +144,7 @@ class CourseDB:
                 s = q["summary"]
                 instructors = [i["name"] for i in q["instructors"] if i.get("name")] or r["instructors"]
                 offerings.append({
-                    **instructor_scores(q),
+                    **instructor_scores(q), **additional_scores(q),
                     "term": r["term"],
                     "section": r.get("section"),
                     "instructors": instructors,
@@ -290,6 +324,7 @@ class CourseDB:
         for key, field, cmp in (("min_overall", "course_overall", "ge"), ("min_recommend", "recommend_mean", "ge"),
                                 ("min_instructor", "instructor_score", "ge"),
                                 ("min_lectures", "effective_lectures", "ge"),
+                                *(("min_" + field, field, "ge") for field, *_ in EXTRA_Q_SCORES),
                                 ("max_workload", "workload_hrs_mean", "le")):
             if f.get(key):
                 v = o.get(field)
@@ -421,6 +456,7 @@ class CourseDB:
             "overall": o["course_overall"],
             "instructor_score": o.get("instructor_score"),
             "effective_lectures": o.get("effective_lectures"),
+            **{field: o.get(field) for field, *_ in EXTRA_Q_SCORES},
             "q_term": o.get("term"),
             "workload_hrs": o["workload_hrs_mean"],
             "recommend": o["recommend_mean"],
@@ -445,7 +481,7 @@ class CourseDB:
             return {**c, "comments": c["comments"][:max_comments], "total_comments": len(c["comments"])}
         # Trimmed view for the model: fewer, shorter comments and only the headline numbers (saves tokens).
         keep = ("term", "instructors", "course_overall", "course_overall_fas_avg", "workload_hrs_mean",
-                "recommend_mean", "responded", "enroll_reasons", "instructor_score", "effective_lectures")
+                "recommend_mean", "responded", "enroll_reasons", "instructor_score", "effective_lectures", *(field for field, *_ in EXTRA_Q_SCORES))
         cat = dict(c.get("catalog") or {})
         if filters:
             cat["offered"] = [{**o, "sections": [sec for sec in o["sections"] if self.section_fits(sec, filters)]}
@@ -508,6 +544,7 @@ class CourseDB:
             "has_q": bool(c["offerings"]),
             "instructor_score": o.get("instructor_score"),
             "effective_lectures": o.get("effective_lectures"),
+            **{field: o.get(field) for field, *_ in EXTRA_Q_SCORES},
             "q_term": o.get("term"),
             "overall": o["course_overall"],
             "overall_fas_avg": o["course_overall_fas_avg"],

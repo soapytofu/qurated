@@ -12,7 +12,7 @@ def test_scores_weight_responses_and_ignore_missing_or_invalid_values():
         instructor(None,20),instructor(0,50),instructor(5,0),instructor(5,float('inf'))]})
     assert scores['effective_lectures']==3.5
     assert scores['instructor_score'] is None
-    assert instructor_scores({})=={'effective_lectures':None,'instructor_score':None}
+    assert all(value is None for value in instructor_scores({}).values())
 
 
 def test_historical_score_filters_match_browse_chat_and_cards():
@@ -33,3 +33,24 @@ def test_historical_score_filters_match_browse_chat_and_cards():
 def test_instructor_filter_api_bounds():
     assert server.clean_filters({'min_instructor':'4.5','min_lectures':4})=={'min_instructor':4.5,'min_lectures':4}
     assert server.clean_filters({'min_instructor':float('inf'),'min_lectures':6})=={}
+
+
+from courses import EXTRA_Q_SCORES, additional_scores
+
+@pytest.mark.parametrize("field,label,section,prefix", EXTRA_Q_SCORES)
+def test_all_additional_scores_extract_filter_and_reach_clients(field,label,section,prefix):
+    answer = {"mean": 4.25, "count": 10}
+    report = {section: {prefix: answer}} if section != "instructors" else {"instructors": [{"questions": {prefix: answer}}]}
+    scores = {**additional_scores(report), **instructor_scores(report)}
+    assert scores[field] == 4.25
+    db = database()
+    db.courses["TEST 0"]["offerings"] = [{**NO_Q, **scores, "term": "2025 Fall"}]
+    f = server.clean_filters({"min_" + field: "4"})
+    assert f == {"min_" + field: 4}
+    assert [c["code"] for c in db.browse(f)["cards"]] == ["TEST 0"]
+    assert db.brief("TEST 0")[field] == 4.25
+    assert db.card("TEST 0")[field] == 4.25
+    assert not db.browse({"min_" + field: 4.5})["cards"]
+    assert server.clean_filters({"min_" + field: float("nan")}) == {}
+    answer["mean"] = 0
+    assert {**additional_scores(report), **instructor_scores(report)}[field] is None

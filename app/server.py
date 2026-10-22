@@ -29,7 +29,7 @@ import llm
 from guardrails import has_sensitive_text, PRIVACY_REPLY
 from chat_state import ChatState
 from request_safety import RequestSafetyMiddleware
-from courses import CATALOG_DIR, CourseDB, REPORTS_DIR, TAGS_FILE, GEN_EDS
+from courses import EXTRA_Q_SCORES, CATALOG_DIR, CourseDB, REPORTS_DIR, TAGS_FILE, GEN_EDS
 
 load_dotenv(Path(__file__).parent / ".env")
 
@@ -573,7 +573,7 @@ def clean_filters(f):
     if isinstance(f.get("subject"), str) and re.fullmatch(r"[A-Z][A-Z-]{0,11}", f["subject"]):
         out["subject"] = f["subject"]
     for k, lo, hi in (("min_overall", 1, 5), ("min_recommend", 1, 5),
-                      ("min_instructor", 1, 5), ("min_lectures", 1, 5), ("max_workload", 1, 40)):
+                      ("min_instructor", 1, 5), ("min_lectures", 1, 5), *( ("min_" + field, 1, 5) for field, *_ in EXTRA_Q_SCORES), ("max_workload", 1, 40)):
         try:
             v = float(f.get(k) or 0)
             if lo <= v <= hi:
