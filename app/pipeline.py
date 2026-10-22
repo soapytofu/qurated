@@ -82,17 +82,19 @@ def plan(db, message, preferences, history=()):
     term = "2027 Spring" if "spring" in m else "2026 Fall" if "fall" in m else "any"
     light = re.search(r"\b(light|easy|chill|less work|low workload|not much work|manageable)\b", m)
     pref_cap = (preferences or {}).get("max_workload_hrs") or 0
-    codes = []
+    codes, suggestions = [], {}
     for raw in CODE_RE.findall(message):
         c = db.lookup(" ".join(raw.split()).upper()) or db.lookup(re.sub(r"(\D)(\d)", r"\1 \2", raw, 1).upper())
         if c and c["code"] not in codes:
             codes.append(c["code"])
+        elif not c and (nearby := db.code_suggestions(raw)):
+            suggestions[raw] = nearby
     # Term words are handled by the term filter; as search keywords they'd match thousands of reviews.
     query = re.sub(r"\b(spring|fall|autumn|20\d\d|semester|term|next|this|upcoming)\b", " ", message, flags=re.I)
     query = re.sub(r"\bgen ?eds?\b|general education", " ", query, flags=re.I) if re.search(r"\bgen ?eds?\b|general education", m) else query
     return {"queries": [" ".join(query.split()) or message], "codes": codes, "max_workload": 6 if light else (pref_cap or 0), "term": term,
             "gen_ed": bool(category or re.search(r"\bgen ?eds?\b|general education", m)),
-            "gen_ed_category": category}
+            "gen_ed_category": category, "code_suggestions": suggestions}
 
 
 def describe_filters(f):
@@ -252,6 +254,11 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
             yield sse({"type": "error", "text": "The course catalog has not been loaded yet. Course recommendations will be available after the catalog is imported."})
             return 0.0, time.perf_counter() - t0
         p = plan(db, message, preferences, history)
+        if p.get("code_suggestions"):
+            questions = [f"For {raw}, did you mean {' or '.join(options)}?"
+                         for raw, options in p["code_suggestions"].items()]
+            yield sse({"type": "text", "delta": " ".join(questions)})
+            return 0.0, time.perf_counter() - t0
         yield sse({"type": "status", "text": "Searching courses"})
         filters = dict(filters or {})
         if filters.get("term"):
