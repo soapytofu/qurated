@@ -83,7 +83,8 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 | `ANTHROPIC_API_KEY` | Claude API access | required for Anthropic chat or batch tagging |
 | `OPENAI_API_KEY` | OpenAI API access | required for OpenAI chat |
 | `OPENAI_MODEL` | Responses API model supporting structured outputs | `gpt-4.1-mini` |
-| `OPENAI_ROUTER_MODEL` | Optional separate routing model | same as `OPENAI_MODEL` |
+| `OPENAI_ROUTER_MODEL` | Optional separate routing/query-expansion model | same as `OPENAI_MODEL` |
+| `SEARCH_QUERY_EXPANSION` | Expand conversational interests into keyword queries; `0` disables | `1` |
 | `GOOGLE_CLIENT_ID` | Google sign-in ([guide](docs/google-signin.md)) | required |
 | `SESSION_SECRET` | Signs login cookies | required |
 | `ALLOWED_EMAIL_DOMAINS` | Comma-separated domains allowed to sign in | `college.harvard.edu` |
@@ -102,6 +103,11 @@ OPENAI_MODEL=gpt-4.1-mini
 To switch back, set `LLM_PROVIDER=anthropic` and supply `ANTHROPIC_API_KEY`.
 You can keep both keys locally; chat sends requests only to the selected provider.
 Both providers use the same retrieval, privacy checks, and validated course cards.
+For course discovery, a bounded model call expands conversational interests into up to two
+additional keyword queries. The original query remains, and results are interleaved.
+The expansion cannot change hard filters or course identities; timeouts or malformed output
+fall back to keyword search. This adds latency and API usage. Exact course lookups skip expansion.
+The search still uses locally imported catalog data, not live web browsing or vector search.
 OpenAI uses the [Responses API](https://developers.openai.com/api/docs/guides/streaming-responses)
 with strict structured output and `store=False`. OpenAI costs are not estimated in the
 server log; check your provider dashboard for actual usage. The offline
