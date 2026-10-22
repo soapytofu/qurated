@@ -572,7 +572,8 @@ def clean_filters(f):
         out["term"] = f["term"]
     if isinstance(f.get("subject"), str) and re.fullmatch(r"[A-Z][A-Z-]{0,11}", f["subject"]):
         out["subject"] = f["subject"]
-    for k, lo, hi in (("min_overall", 1, 5), ("min_recommend", 1, 5), ("max_workload", 1, 40)):
+    for k, lo, hi in (("min_overall", 1, 5), ("min_recommend", 1, 5),
+                      ("min_instructor", 1, 5), ("min_lectures", 1, 5), ("max_workload", 1, 40)):
         try:
             v = float(f.get(k) or 0)
             if lo <= v <= hi:
