@@ -2,6 +2,7 @@
 import json
 import math
 import re
+from difflib import get_close_matches
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -23,6 +24,14 @@ GEN_EDS = ["Aesthetics and Culture", "Ethics and Civics", "Histories, Societies,
            "Science and Technology in Society"]
 DIVISIONS = ["Arts and Humanities", "Social Sciences", "Science & Engineering & Applied Science"]
 DAY_CODES = ["M", "T", "W", "Th", "F"]
+# Explicit equivalence supplied by the project owner; do not strip zeros generally.
+CODE_EQUIVALENTS = ({"COMPSCI124", "COMPSCI1240"},)
+
+
+def normalized_code(code):
+    value = re.sub(r"\s+", "", code.upper())
+    return re.sub(r"^CS(?=\d)", "COMPSCI", value)
+
 TIME_START = re.compile(r"^(\d{1,2}):(\d{2})(am|pm)", re.I)
 
 
@@ -338,8 +347,8 @@ class CourseDB:
         """True if the course, or any code it's cross-listed as, is in the student's taken set."""
         if not taken:
             return False
-        c = self.courses.get(code)
-        return code in taken or bool(c and set(c["also_listed_as"]) & set(taken))
+        c = self.lookup(code)
+        return code in taken or bool(c and any(self.lookup(t) is c for t in taken))
 
     def search(self, query="", dept=None, max_workload=None, min_overall=None, min_recommend=None,
                term=None, limit=12, exclude=frozenset(), undergrad=False, filters=None):
@@ -433,11 +442,24 @@ class CourseDB:
     def lookup(self, code):
         if code in self.courses:
             return self.courses[code]
-        norm = re.sub(r"\s+", " ", code.strip().upper())
-        for k, c in self.courses.items():
-            if k.upper() == norm or norm in (x.upper() for x in c["also_listed_as"]):
-                return c
-        return None
+        norm = normalized_code(code)
+        direct = [c for k, c in self.courses.items() if normalized_code(k) == norm]
+        if len(direct) == 1:
+            return direct[0]
+        equivalents = next((group for group in CODE_EQUIVALENTS if norm in group), {norm})
+        matches = [c for k, c in self.courses.items()
+                   if {normalized_code(k), *(normalized_code(x) for x in c['also_listed_as'])} & equivalents]
+        return matches[0] if len(matches) == 1 else None
+
+    def code_suggestions(self, code):
+        """Suggest nearby codes within the same subject, without resolving a typo."""
+        norm = normalized_code(code)
+        subject = re.match(r"[^0-9]+", norm)
+        if not subject:
+            return []
+        options = {normalized_code(k): k for k in self.courses
+                   if re.match(r"[^0-9]+", normalized_code(k)).group() == subject.group()}
+        return [options[k] for k in get_close_matches(norm, options, n=3, cutoff=0.8)]
 
     def card(self, code, filters=None):
         """Data the UI needs to render a course panel."""
