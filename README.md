@@ -66,26 +66,46 @@ remove the remaining latency spikes.
 ### Prerequisites
 - macOS or Linux with [uv](https://docs.astral.sh/uv/) (installs the right Python automatically)
 - Google Chrome (only for the Q report scraper's HarvardKey login)
-- An [Anthropic API key](https://console.anthropic.com/)
+- An [OpenAI API key](https://platform.openai.com/api-keys) or [Anthropic API key](https://console.anthropic.com/)
 - A Google OAuth Client ID for sign-in: [step-by-step guide](docs/google-signin.md), about 10 minutes, free
 
 ### 1. Configure
 ```bash
 cd app
 cp .env.example .env
-# Fill in ANTHROPIC_API_KEY, GOOGLE_CLIENT_ID, and a long random SESSION_SECRET, e.g.:
+# Fill in your selected AI provider key, GOOGLE_CLIENT_ID, and a long random SESSION_SECRET, e.g.:
 python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Claude API access | required |
+| `LLM_PROVIDER` | `anthropic` or `openai`; explicit selection, no automatic fallback | `anthropic` |
+| `ANTHROPIC_API_KEY` | Claude API access | required for Anthropic chat or batch tagging |
+| `OPENAI_API_KEY` | OpenAI API access | required for OpenAI chat |
+| `OPENAI_MODEL` | Responses API model supporting structured outputs | `gpt-4.1-mini` |
+| `OPENAI_ROUTER_MODEL` | Optional separate routing model | same as `OPENAI_MODEL` |
 | `GOOGLE_CLIENT_ID` | Google sign-in ([guide](docs/google-signin.md)) | required |
 | `SESSION_SECRET` | Signs login cookies | required |
 | `ALLOWED_EMAIL_DOMAINS` | Comma-separated domains allowed to sign in | `college.harvard.edu` |
 | `DAILY_QUESTION_LIMIT` | Questions per student per day | `40` |
 | `ADMIN_EMAILS` | Comma-separated admin emails | (none) |
 | `HTTPS_ONLY` | Set to `1` when served over HTTPS (secure cookies) | `0` |
+
+To use GPT, set these values in `app/.env` and restart the server:
+
+```dotenv
+LLM_PROVIDER=openai
+OPENAI_API_KEY=your-openai-api-key
+OPENAI_MODEL=gpt-4.1-mini
+```
+
+To switch back, set `LLM_PROVIDER=anthropic` and supply `ANTHROPIC_API_KEY`.
+You can keep both keys locally; chat sends requests only to the selected provider.
+Both providers use the same retrieval, privacy checks, and validated course cards.
+OpenAI uses the [Responses API](https://developers.openai.com/api/docs/guides/streaming-responses)
+with strict structured output and `store=False`. OpenAI costs are not estimated in the
+server log; check your provider dashboard for actual usage. The offline
+`tag_courses.py` batch tool and legacy experiments still use Anthropic.
 
 ### 2. Get the data
 ```bash
