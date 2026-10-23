@@ -119,7 +119,7 @@ cd qscrape
 # Q reports (needs your HarvardKey)
 uv run scrape.py login                                       # sign in with HarvardKey + Duo in the Chrome window
 uv run scrape.py index                                       # list every report for every term
-uv run scrape.py reports --term "2026 Spring" "2025 Fall"    # download + parse (resumable)
+uv run scrape.py reports                                   # all indexed terms; resumable
 
 # Course catalog (public, no login)
 uv run catalog.py list                                       # every FAS section, one subject at a time (~20 min)
@@ -201,3 +201,16 @@ Daily chat quotas are stored in SQLite. Conversation context is process-local, l
 and expires after one idle hour (removed on the next chat acquisition). At most 1,000 conversations are kept
 per process. Use one worker for consistent follow-ups, or introduce shared conversation storage before scaling
 across workers. `QURATED_DB_PATH` optionally overrides the account database path.
+
+### Running on another computer
+
+Git does not include the local course catalog, Q reports, accounts, or secrets. Each checkout
+needs its own `app/.env` and course data. Import the public catalog using the commands above,
+or copy `qscrape/data/catalog/sections.jsonl` and `qscrape/data/catalog/details/` from a prepared
+checkout into the same paths in the new checkout. A public-catalog ZIP with those paths can
+be extracted from the repository root. Restart the app or allow its automatic data reload.
+
+A partial catalog snapshot may lack requirement details for some courses. Q reports require
+a separate authorized HarvardKey import; omitting `--term` imports all indexed semesters.
+Do not transfer `.env`, `.browser-profile`, or `app/data/qurated.db` as part of catalog setup.
+No Q reviews in the loaded data does not establish that a course is new.

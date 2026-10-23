@@ -84,7 +84,7 @@ function cardHTML(c) {
       ${tagsHTML(c.tags)}
       ${c.reason ? `<p class="reason">${esc(c.reason)}</p>` : ""}
       ${c.quote ? `<p class="quote">“${esc(c.quote)}”</p>` : ""}
-      ${c.has_q === false ? '<div class="no-q">New: no Q reviews yet</div>' : `
+      ${c.has_q === false ? '<div class="no-q">No Q Guide reviews available in the loaded data</div>' : `
       <div class="stats">
         <div class="stat"><div class="n${overallHi}">${fmt(c.overall)}</div><div class="l">Overall</div></div>
         <div class="stat"><div class="n">${fmt(c.workload_hrs)}<small>hrs</small></div><div class="l">Per week</div></div>
@@ -548,7 +548,7 @@ async function openDetail(code) {
     </div>
     ${tagsHTML(c.tags)}
     ${catalogHTML(c.catalog)}
-    ${c.offerings.length ? `<h3 class="sub">Q report history</h3>` : '<p class="no-q">New: no Q reviews yet</p>'}
+    ${c.offerings.length ? `<h3 class="sub">Q report history</h3>` : '<p class="no-q">No Q Guide reviews available in the loaded data</p>'}
     <table class="offerings"${c.offerings.length ? "" : " hidden"}>
       <thead><tr><th>Term</th><th>Instructor</th><th>Overall</th><th>Hrs/wk</th><th>Recommend</th><th>Responses</th></tr></thead>
       <tbody>${c.offerings.map((o) => `
