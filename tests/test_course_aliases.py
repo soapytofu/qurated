@@ -118,3 +118,19 @@ def test_ambiguous_crosslist_is_not_allowed_even_with_one_candidate():
     answer = dict(picks=[dict(code='OTHER 1', reason='Fits.', quote='')], advice='Check details.')
     with pytest.raises(ValueError):
         validate_answer(answer, [{'code': 'TEST 1'}], [], db, lambda *a: None)
+
+
+def test_equivalence_lookups_are_cached_per_index_snapshot(monkeypatch):
+    db = both_alias_records()
+    original = db.lookup
+    calls = []
+    def lookup(code):
+        calls.append(code)
+        return original(code)
+    monkeypatch.setattr(db, 'lookup', lookup)
+    for _ in range(20):
+        assert db.is_taken('COMPSCI 1240', {'cs124'})
+    assert len(calls) == 2
+    db._build_index()
+    assert db.is_taken('COMPSCI 1240', {'cs124'})
+    assert len(calls) == 4

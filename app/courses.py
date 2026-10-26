@@ -225,6 +225,7 @@ class CourseDB:
             courses[code]["catalog"] = cat
 
     def _build_index(self):
+        self._identity_cache = {}
         self.doc_tf = {}
         df = Counter()
         lengths = []
@@ -418,13 +419,19 @@ class CourseDB:
 
     def identity_keys(self, code):
         """Known equivalences for exclusions/deduplication, even when both records exist."""
+        norm = normalized_code(code)
+        if norm in self._identity_cache:
+            return self._identity_cache[norm]
         course = self.lookup(code)
-        keys = {normalized_code(code)}
+        keys = {norm}
         if course:
             keys.update(normalized_code(alias) for alias in [course["code"], *course["also_listed_as"]])
         for group in CODE_EQUIVALENTS:
             if keys & group:
                 keys.update(group)
+        keys = frozenset(keys)
+        if course:
+            self._identity_cache[norm] = keys
         return keys
 
     def search(self, query="", dept=None, max_workload=None, min_overall=None, min_recommend=None,
