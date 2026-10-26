@@ -240,3 +240,14 @@ def test_search_summary_renders_untrusted_keywords_as_text(page):
     expect(page.locator('.search-plan')).to_contain_text('<img src=x')
     assert page.locator('.search-plan img').count() == 0
     assert page.evaluate('window.injected === undefined')
+
+
+def test_direct_search_accepts_compact_course_codes(page):
+    from playwright.sync_api import expect
+    page.locator('#cta-browse').click()
+    page.locator('#f-query').fill('test0')
+    expect(page.locator('#f-show')).to_be_enabled()
+    expect(page.locator('#f-show')).to_contain_text('1 course')
+    page.locator('#f-show').click()
+    expect(page.locator('.card')).to_have_count(1)
+    expect(page.locator('.card')).to_contain_text('TEST 0')

@@ -35,3 +35,27 @@ def test_no_general_trailing_zero_rewrite_and_ambiguous_alias():
     second = db.courses['TEST 2']
     first['also_listed_as'] = second['also_listed_as'] = ['OTHER 1']
     assert db.lookup('other1') is None
+
+
+@pytest.mark.parametrize('query', ['cs124', 'CS 1240', 'COMPSCI1240'])
+def test_direct_search_alias_obeys_filters_exclusions_and_pagination(query):
+    db = cs_database()
+    assert [c['code'] for c in db.browse(query=query)['cards']] == ['COMPSCI 1240']
+    assert db.browse(query=query, f={'term': '2026 Fall'})['total'] == 0
+    assert db.browse(query=query, exclude={'CS124'})['total'] == 0
+    assert db.browse(query=query, offset=1) == {'total': 1, 'cards': []}
+    assert db.browse(query=query, limit=0)['cards'] == []
+
+
+@pytest.mark.parametrize('query', ['cs', 'cs12', 'cs124', 'cs1240'])
+def test_taken_autocomplete_accepts_cs_shorthand(query):
+    assert cs_database().suggest(query)[0]['code'] == 'COMPSCI 1240'
+
+
+def test_ambiguous_alias_is_not_automatically_selected_by_browse():
+    db = cs_database()
+    db.courses['TEST 1']['also_listed_as'] = ['OTHER 1']
+    db.courses['TEST 2']['also_listed_as'] = ['OTHER 1']
+    db._build_index()
+    assert db.lookup('OTHER1') is None
+    assert db.browse(query='OTHER1')['cards'] == []
