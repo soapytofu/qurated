@@ -1,3 +1,16 @@
+const extraQScores = [
+  ["materials", "Course materials"],
+  ["assignments", "Assignments"],
+  ["course_feedback", "Feedback on coursework"],
+  ["sections", "Section component"],
+  ["accessibility", "Instructor accessibility"],
+  ["enthusiasm", "Generates enthusiasm"],
+  ["discussion", "Encourages discussion and participation"],
+  ["instructor_feedback", "Useful instructor feedback"],
+  ["timely_returns", "Timely assignment returns"],
+  ["open_mindedness", "Students listen with an open mind"],
+  ["expressing_views", "Comfort expressing controversial views"],
+];
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 
@@ -557,6 +570,7 @@ async function openDetail(code) {
         <td>${fmt(o.workload_hrs_mean)}</td><td>${fmt(o.recommend_mean, 2)}</td><td>${fmt(o.instructor_score, 2)}</td><td>${fmt(o.effective_lectures, 2)}</td><td>${fmt(o.responded, 0)}/${fmt(o.invited, 0)}</td></tr>`).join("")}
       </tbody>
     </table>
+    ${c.offerings.length ? `<details><summary>More Q scores · ${esc(c.offerings[0].term)}</summary><p class="hint">Latest loaded report, out of 5. Instructor scores average that report’s instructors; current instructors may differ. — means unavailable.</p><table class="offerings"><tbody>${extraQScores.map(([field, label]) => `<tr><th>${esc(label)}</th><td>${fmt(c.offerings[0][field], 2)}</td></tr>`).join("")}</tbody></table></details>` : ""}
     <div class="comments">
       <h3>What students said <span class="meta">(${c.total_comments})</span></h3>
       ${c.comments.map((x) => `<div class="comment">${esc(x.text)}<div class="ct">${esc(x.term)}</div></div>`).join("") || '<p class="meta">No written comments.</p>'}
@@ -723,7 +737,7 @@ function filtersChanged() {
 
 $$(".segctl", fPanel).forEach((seg) => $$("button", seg).forEach((b) => b.addEventListener("click", () => {
   const v = b.dataset.v;
-  filters[seg.dataset.key] = ["min_overall", "min_instructor", "min_lectures", "min_recommend"].includes(seg.dataset.key) && v ? Number(v) : v;
+  filters[seg.dataset.key] = ["min_overall", "min_instructor", "min_lectures", "min_recommend", ...extraQScores.map(([field]) => `min_${field}`)].includes(seg.dataset.key) && v ? Number(v) : v;
   filtersChanged();
 })));
 $$("#f-days button").forEach((b) => b.addEventListener("click", () => {
@@ -800,6 +814,9 @@ function describeFilters(state) {
   if (f.term) parts.push(f.term);
   if (f.subject) parts.push(f.subject);
   if (f.min_overall) parts.push(`rated ${f.min_overall}+`);
+  for (const [field, label] of extraQScores) {
+    if (f[`min_${field}`]) parts.push(`${label.toLowerCase()} ${f[`min_${field}`]}+`);
+  }
   if (f.min_instructor) parts.push(`instructor ${f.min_instructor}+`);
   if (f.min_lectures) parts.push(`effective lectures ${f.min_lectures}+`);
   if (f.min_recommend) parts.push(`recommend ${f.min_recommend}+`);

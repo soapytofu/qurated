@@ -190,3 +190,23 @@ def test_instructor_filters_persist_and_apply_to_requests(page):
     expect(page.locator('[data-key="min_lectures"] button[data-v="4"]')).to_have_attribute('aria-pressed','true')
     page.locator('#f-reset').click()
     expect(page.locator('[data-key="min_lectures"] button[data-v=""]')).to_have_attribute('aria-pressed','true')
+
+
+def test_additional_q_filters_persist_reset_and_fit_mobile(page):
+    from playwright.sync_api import expect
+    page.set_viewport_size({'width': 375, 'height': 812})
+    page.locator('#open-filters').click()
+    page.locator('#more-q-filters summary').click()
+    for field in ['materials', 'accessibility', 'expressing_views']:
+        with page.expect_request(lambda r: '/api/browse' in r.url and ('min_' + field) in (r.post_data or '')) as pending:
+            page.locator(f'[data-key="min_{field}"] button[data-v="4"]').click()
+        assert pending.value.post_data_json['filters']['min_' + field] == 4
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    page.reload()
+    page.locator('#open-filters').click()
+    page.locator('#more-q-filters summary').click()
+    for field in ['materials', 'accessibility', 'expressing_views']:
+        expect(page.locator(f'[data-key="min_{field}"] button[data-v="4"]')).to_have_attribute('aria-pressed', 'true')
+    page.locator('#f-reset').click()
+    for field in ['materials', 'accessibility', 'expressing_views']:
+        expect(page.locator(f'[data-key="min_{field}"] button[data-v=""]')).to_have_attribute('aria-pressed', 'true')
