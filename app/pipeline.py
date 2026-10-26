@@ -10,8 +10,9 @@ import threading
 import time
 from itertools import zip_longest
 import search_planner
+import search_constraints
 
-from courses import UPCOMING, GEN_EDS, tokenize
+from courses import UPCOMING, GEN_EDS, EXTRA_Q_SCORES, tokenize
 from guardrails import POLICY, SAFE_FAILURE, validate_answer
 
 ANSWER_MODEL = "claude-sonnet-5-5"
@@ -68,20 +69,26 @@ def is_follow_up(message, history):
 
 def plan(db, message, preferences, history=()):
     """Extract deterministic constraints before optional semantic query expansion."""
+    extracted = search_constraints.extract(message)
+
+    def finish(value):
+        return {**value, "numeric_filters": extracted["filters"], "term": extracted["term"],
+                "clarifications": extracted["clarifications"]}
+
     if is_follow_up(message, history) and re.search(
             r"\b(more (options|courses|classes)|other (options|courses|classes)|alternatives|something else)\b", message, re.I):
         previous = previous_picks(history)
         titles = [(db.lookup(code) or {}).get("title", "") for code in previous]
-        return {"queries": [" ".join(titles) or message], "codes": [], "exclude": previous,
-                "max_workload": (preferences or {}).get("max_workload_hrs") or 0, "term": "any", "gen_ed": False}
+        return finish({"queries": [" ".join(titles) or message], "codes": [], "exclude": previous,
+                "max_workload": (preferences or {}).get("max_workload_hrs") or 0, "term": "any", "gen_ed": False})
     if is_follow_up(message, history):
         # "Which of those...": answer over the courses we just recommended, no new search.
-        return {"queries": [], "codes": previous_picks(history)[:6], "max_workload": 0, "term": "any", "gen_ed": False}
+        return finish({"queries": [], "codes": previous_picks(history)[:6], "max_workload": 0, "term": "any", "gen_ed": False})
     m = message.lower()
     normalized = re.sub(r"[^a-z0-9]+", " ", m.replace("&", "and")).strip()
     category = next((name for name in GEN_EDS if
                      re.sub(r"[^a-z0-9]+", " ", name.lower()).strip() in normalized), None)
-    term = "2027 Spring" if "spring" in m else "2026 Fall" if "fall" in m else "any"
+    term = extracted["term"]
     light = re.search(r"\b(light|easy|chill|less work|low workload|not much work|manageable)\b", m)
     pref_cap = (preferences or {}).get("max_workload_hrs") or 0
     codes, suggestions = [], {}
@@ -92,7 +99,7 @@ def plan(db, message, preferences, history=()):
         elif not c and (nearby := db.code_suggestions(raw)):
             suggestions[raw] = nearby
     # Term words are handled by the term filter; as search keywords they'd match thousands of reviews.
-    query = re.sub(r"\b(spring|fall|autumn|20\d\d|semester|term|next|this|upcoming)\b", " ", message, flags=re.I)
+    query = re.sub(r"\b(spring|fall|autumn|20\d\d|semester|term|next|this|upcoming)\b", " ", extracted["query"], flags=re.I)
     query = re.sub(r"\bgen ?eds?\b|general education", " ", query, flags=re.I) if re.search(r"\bgen ?eds?\b|general education", m) else query
     subject = "COMPSCI" if (re.search(r"\b(?:CS|COMPSCI|computer science)\b", message, re.I)
                             and not re.search(r"\b(not|outside|except|avoid|or)\b", message, re.I)) else None
@@ -105,43 +112,72 @@ def plan(db, message, preferences, history=()):
         query = re.sub(r"\b(?:CS|COMPSCI|computer science)\b", " ", query, flags=re.I)
     query = re.sub(r"\b(light|easy|chill|less work|low workload|not much work|manageable|fulfill|fulfills|satisfy|satisfies|requirements?|interested|someone)\b", " ", query, flags=re.I)
     query = " ".join(tokenize(query))
-    return search_planner.deterministic({"queries": [query], "codes": codes, "max_workload": min(6, pref_cap) if light and pref_cap else 6 if light else (pref_cap or 0), "term": term,
+    return search_planner.deterministic(finish({"queries": [query], "codes": codes, "max_workload": min(6, pref_cap) if light and pref_cap else 6 if light else (pref_cap or 0), "term": term,
             "gen_ed": bool(category or re.search(r"\bgen ?eds?\b|general education", m)),
-            "gen_ed_category": category, "code_suggestions": suggestions, "subject": subject})
+            "gen_ed_category": category, "code_suggestions": suggestions, "subject": subject,
+            "light_workload": bool(light)}))
 
 
 def describe_filters(f):
     if not f:
         return ""
     names = {"term": "term", "subject": "subject", "min_overall": "overall rating ≥", "min_recommend": "recommend ≥",
-             "max_workload": "workload ≤ hrs/wk", "gen_ed": "Gen Ed", "divisional": "divisional", "qrd": "QRD",
+             "max_workload": "workload ≤ hours/week:", "workload_under": "workload < hours/week:",
+             "min_instructor": "instructor rating ≥", "min_lectures": "effective lectures ≥",
+             "any_gen_ed": "any Gen Ed", "gen_ed": "Gen Ed", "divisional": "divisional", "qrd": "QRD",
              "avoid_days": "no classes on", "earliest_start": "no class before (minutes after midnight)",
              "small_class": "small class (cap ≤ 20)", "has_reviews": "has Q reviews", "grading": "grading",
              "format": "format"}
-    return "Active filters (every candidate already satisfies these): " + "; ".join(
-        f"{names.get(k, k)} {v}" for k, v in f.items())
+    names.update({"min_" + field: label.lower() + " ≥" for field, label, *_ in EXTRA_Q_SCORES})
+    parts = []
+    for key, value in f.items():
+        if key in ("max_workload", "workload_under"):
+            parts.append(f'workload {"<" if key == "workload_under" else "≤"} {value:g} hours/week')
+        elif key == "earliest_start":
+            hour, minute = divmod(int(value), 60)
+            parts.append(f'starts at or after {hour % 12 or 12}:{minute:02d}{"am" if hour < 12 else "pm"}')
+        elif key == "avoid_days":
+            parts.append('no classes on ' + '/'.join(value))
+        elif isinstance(value, bool):
+            if value:
+                parts.append(names.get(key, key))
+        else:
+            parts.append(f'{names.get(key, key)} {value:g}' if isinstance(value, (int, float))
+                         else f'{names.get(key, key)} {value}')
+    return "Required: " + "; ".join(parts)
+
+
+
+def effective_filters(p, selected=None):
+    """Intersect all requested constraints. Return conflicts instead of choosing a winner."""
+    filters = dict(selected or {})
+    conflicts = list(p.get("clarifications", []))
+    for key, value in (("subject", p.get("subject")), ("gen_ed", p.get("gen_ed_category")),
+                       ("term", p.get("term") if p.get("term") in UPCOMING else None)):
+        if not value:
+            continue
+        if filters.get(key) and filters[key] != value:
+            conflicts.append(f'Your question asks for {value}, but Filters selects {filters[key]}. '
+                             'Change your question or the selected filter so they agree.')
+        else:
+            filters[key] = value
+    if p["gen_ed"] and not filters.get("gen_ed"):
+        filters["any_gen_ed"] = True
+    requested = dict(p.get("numeric_filters", {}))
+    if p["max_workload"]:
+        requested["max_workload"] = min(requested.get("max_workload") or p["max_workload"], p["max_workload"])
+    for key, value in requested.items():
+        combine = max if key.startswith("min_") else min
+        filters[key] = combine(filters.get(key, value), value)
+    return filters, conflicts
 
 
 def retrieve(db, p, taken=frozenset(), k=8, filters=None):
     taken = frozenset(taken) | frozenset(p.get("exclude", []))
     dept = None
-    filters = dict(filters or {})
-    if p.get("subject"):
-        if filters.get("subject") and filters["subject"] != p["subject"]:
-            return []
-        filters["subject"] = p["subject"]
-    if p.get("gen_ed_category"):
-        if filters.get("gen_ed") and filters["gen_ed"] != p["gen_ed_category"]:
-            return []  # Do not silently replace a conflicting explicit filter.
-        filters["gen_ed"] = p["gen_ed_category"]
-    if p["term"] in UPCOMING:
-        if filters.get("term") and filters["term"] != p["term"]:
-            return []
-        filters["term"] = p["term"]
-    if p["max_workload"]:
-        filters["max_workload"] = min(filters.get("max_workload") or p["max_workload"], p["max_workload"])
-    if p["gen_ed"] and not filters.get("gen_ed"):
-        filters["any_gen_ed"] = True
+    filters, conflicts = effective_filters(p, filters)
+    if conflicts:
+        return []
     # Over-fetch when a term filter will prune results afterwards (search ranks before the term check).
     limit = 40 if p["term"] in UPCOMING else 10
     filters = filters or {}
@@ -273,6 +309,10 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
             yield sse({"type": "error", "text": "The course catalog has not been loaded yet. Course recommendations will be available after the catalog is imported."})
             return 0.0, time.perf_counter() - t0
         p = plan(db, message, preferences, history)
+        filters, conflicts = effective_filters(p, filters)
+        if conflicts:
+            yield sse({"type": "text", "delta": " ".join(conflicts)})
+            return 0.0, time.perf_counter() - t0
         if p.get("code_suggestions"):
             questions = [f"For {raw}, did you mean {' or '.join(options)}?"
                          for raw, options in p["code_suggestions"].items()]
@@ -281,6 +321,10 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
         yield sse({"type": "status", "text": "Understanding your course request"})
         p = search_planner.expand(client, p, message, history)
         planner_cost = p.get("planner_cost", 0.0)
+        yield sse({"type": "search_plan", "queries": [q for q in p["queries"] if q],
+                   "criteria": describe_filters(filters) or "No additional filters",
+                   "notes": (["Light/manageable workload means at most 6 hours/week, or a stricter saved limit."]
+                             if p.get("light_workload") else [])})
         yield sse({"type": "status", "text": "Searching courses"})
         filters = dict(filters or {})
         cands = retrieve(db, p, frozenset(taken), filters=filters)

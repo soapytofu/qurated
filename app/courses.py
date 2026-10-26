@@ -325,10 +325,11 @@ class CourseDB:
                                 ("min_instructor", "instructor_score", "ge"),
                                 ("min_lectures", "effective_lectures", "ge"),
                                 *(("min_" + field, field, "ge") for field, *_ in EXTRA_Q_SCORES),
+                                ("workload_under", "workload_hrs_mean", "lt"),
                                 ("max_workload", "workload_hrs_mean", "le")):
             if f.get(key):
                 v = o.get(field)
-                if v is None or (v < f[key] if cmp == "ge" else v > f[key]):
+                if v is None or (v < f[key] if cmp == "ge" else v >= f[key] if cmp == "lt" else v > f[key]):
                     return False
         if f.get("has_reviews") and not c["offerings"]:
             return False
