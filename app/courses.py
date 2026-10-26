@@ -369,6 +369,12 @@ class CourseDB:
 
     def browse(self, f=None, query="", sort="rating", offset=0, limit=24, exclude=frozenset()):
         """Direct search, no LLM: every course matching the filters, ranked by `sort` (or by keyword relevance)."""
+        # A complete known code/alias is an exact lookup, not a fuzzy keyword query.
+        exact = self.lookup(query.strip()) if query.strip() else None
+        if exact:
+            matches = self.matches(exact, f) and not self.is_taken(exact["code"], exclude)
+            return {"total": int(matches), "cards": [self.card(exact["code"], filters=f)]
+                    if matches and offset == 0 and limit > 0 else []}
         q_tokens = tokenize(query)
         rows = []
         for code, c in self.courses.items():
@@ -562,11 +568,16 @@ class CourseDB:
         q = " ".join(q.upper().split())
         if len(q) < 2:
             return []
-        qn = q.replace(" ", "")
+        qn = normalized_code(q)
+        if qn == "CS":
+            qn = "COMPSCI"
+        exact = self.lookup(q)
         words = tokenize(q)
         hits = []
         for code, c in self.courses.items():
-            if code.replace(" ", "").startswith(qn):
+            if exact is c:
+                rank = -1
+            elif any(normalized_code(alias).startswith(qn) for alias in [code, *c['also_listed_as']]):
                 rank = 0
             elif words and all(w in tokenize(c["title"]) for w in words):
                 rank = 1
