@@ -372,9 +372,9 @@ class CourseDB:
         # A complete known code/alias is an exact lookup, not a fuzzy keyword query.
         exact = self.lookup(query.strip()) if query.strip() else None
         if exact:
-            matches = self.matches(exact, f) and not self.is_taken(exact["code"], exclude)
-            return {"total": int(matches), "cards": [self.card(exact["code"], filters=f)]
-                    if matches and offset == 0 and limit > 0 else []}
+            matching = self.filtered_lookup(query.strip(), f, exclude)
+            return {"total": int(matching is not None), "cards": [self.card(matching["code"], filters=f)]
+                    if matching and offset == 0 and limit > 0 else []}
         q_tokens = tokenize(query)
         rows = []
         for code, c in self.courses.items():
@@ -413,8 +413,19 @@ class CourseDB:
         """True if the course, or any code it's cross-listed as, is in the student's taken set."""
         if not taken:
             return False
-        c = self.lookup(code)
-        return code in taken or bool(c and any(self.lookup(t) is c for t in taken))
+        keys = self.identity_keys(code)
+        return any(keys & self.identity_keys(t) for t in taken)
+
+    def identity_keys(self, code):
+        """Known equivalences for exclusions/deduplication, even when both records exist."""
+        course = self.lookup(code)
+        keys = {normalized_code(code)}
+        if course:
+            keys.update(normalized_code(alias) for alias in [course["code"], *course["also_listed_as"]])
+        for group in CODE_EQUIVALENTS:
+            if keys & group:
+                keys.update(group)
+        return keys
 
     def search(self, query="", dept=None, max_workload=None, min_overall=None, min_recommend=None,
                term=None, limit=12, exclude=frozenset(), undergrad=False, filters=None):
@@ -520,6 +531,19 @@ class CourseDB:
         matches = [c for k, c in self.courses.items()
                    if {normalized_code(k), *(normalized_code(x) for x in c['also_listed_as'])} & equivalents]
         return matches[0] if len(matches) == 1 else None
+
+    def filtered_lookup(self, code, filters=None, exclude=frozenset()):
+        """Prefer the named record; allow one known equivalent if only it satisfies the filters."""
+        direct = self.lookup(code)
+        if not direct:
+            return None
+        if self.matches(direct, filters) and not self.is_taken(direct["code"], exclude):
+            return direct
+        keys = self.identity_keys(direct["code"])
+        alternatives = [c for c in self.courses.values()
+                        if keys & self.identity_keys(c["code"]) and self.matches(c, filters)
+                        and not self.is_taken(c["code"], exclude)]
+        return alternatives[0] if len(alternatives) == 1 else None
 
     def code_suggestions(self, code):
         """Suggest nearby codes within the same subject, without resolving a typo."""

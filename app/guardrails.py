@@ -54,12 +54,16 @@ def validate_answer(value, candidates, taken, db, verify_quote):
         resolved = db.lookup(code)
         if resolved:
             code = resolved['code']
+        if code not in allowed and resolved:
+            equivalents = [candidate for candidate in allowed
+                           if db.identity_keys(code) & db.identity_keys(candidate)]
+            if len(equivalents) == 1:
+                code = equivalents[0]
         if code not in allowed or db.is_taken(code, taken):
             raise ValueError('unsupported course')
         if not reason.strip() or len(reason) > 600 or len(quote) > 300:
             raise ValueError('invalid course text')
-        course = db.lookup(code)
-        aliases = {code, *course.get('also_listed_as', [])}
+        aliases = db.identity_keys(code)
         if seen & aliases:
             continue
         seen.update(aliases)
