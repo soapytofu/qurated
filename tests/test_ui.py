@@ -210,3 +210,33 @@ def test_additional_q_filters_persist_reset_and_fit_mobile(page):
     page.locator('#f-reset').click()
     for field in ['materials', 'accessibility', 'expressing_views']:
         expect(page.locator(f'[data-key="min_{field}"] button[data-v=""]')).to_have_attribute('aria-pressed', 'true')
+
+
+def test_chat_shows_interpreted_search_and_preserves_mobile_layout(page):
+    from playwright.sync_api import expect
+    page.set_viewport_size({'width': 375, 'height': 812})
+    page.locator('#input').fill('courses with lectures rated at least 4.5 under 5 hours')
+    page.locator('#ask').click()
+    expect(page.locator('.search-plan summary')).to_have_text('Search interpreted as')
+    page.locator('.search-plan summary').click()
+    expect(page.locator('.search-plan')).to_contain_text('effective lectures ≥ 4.5')
+    expect(page.locator('.search-plan')).to_contain_text('workload < 5 hours/week')
+    expect(page.locator('.search-plan')).to_contain_text('Browsing by filters')
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    Path('/tmp/qurated-playtest').mkdir(exist_ok=True)
+    page.screenshot(path='/tmp/qurated-playtest/search-criteria-mobile.png')
+
+
+def test_search_summary_renders_untrusted_keywords_as_text(page):
+    import json
+    from playwright.sync_api import expect
+    events = [dict(type='search_plan', criteria='No additional filters',
+                   queries=['<img src=x onerror="window.injected=true">'], notes=[]), dict(type='done')]
+    page.route('**/api/chat', lambda route: route.fulfill(status=200, content_type='text/event-stream',
+        body=''.join('data: ' + json.dumps(event) + '\n\n' for event in events)))
+    page.locator('#input').fill('interesting courses')
+    page.locator('#ask').click()
+    page.locator('.search-plan summary').click()
+    expect(page.locator('.search-plan')).to_contain_text('<img src=x')
+    assert page.locator('.search-plan img').count() == 0
+    assert page.evaluate('window.injected === undefined')

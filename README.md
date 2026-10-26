@@ -232,3 +232,12 @@ Subject, Gen Ed, term, and workload constraints are enforced before ranking, inc
 named courses. A minimum Q score excludes missing values. A failed topic search does not silently
 fall back to unrelated courses, and workload limits are not silently relaxed. “Light”, “easy”, and
 “manageable” currently mean at most six reported hours/week, or a stricter saved/selected cap.
+
+Chat recognizes explicit constraints such as “Spring 2027”, “under 5 hours”, “at most 6 hours per
+week”, and “effective lectures rated at least 4.5”. “Under” is strict; “at most” includes the
+boundary. Numerical ratings use the latest loaded Q report and exclude unknown values. Requested
+thresholds intersect selected filters instead of weakening them. Unsupported years, multiple terms,
+out-of-range scores, and conflicting selected terms get a clarification before answer generation.
+Every course search displays an expandable **Search interpreted as** summary with its effective
+constraints and keyword queries. This makes interpretation inspectable; unsupported phrasing still
+needs rewording or the explicit Filters controls.

@@ -266,6 +266,20 @@ async function send(message) {
           if (!textEl) newText();
           text += ev.delta;
           textEl.innerHTML = markdown(text);
+        } else if (ev.type === "search_plan") {
+          const details = document.createElement("details");
+          details.className = "search-plan";
+          const heading = document.createElement("summary");
+          heading.textContent = "Search interpreted as";
+          details.appendChild(heading);
+          const lines = [ev.criteria, ev.queries?.length ? `Keywords: ${ev.queries.join(" / ")}` : "Browsing by filters",
+            ...(ev.notes || []), "Change your question or Filters to adjust this search."];
+          for (const line of lines) {
+            const paragraph = document.createElement("p");
+            paragraph.textContent = line;
+            details.appendChild(paragraph);
+          }
+          bot.insertBefore(details, status);
         } else if (ev.type === "status") {
           if (ev.text !== "Thinking") progress.step(ev.text === "Putting together your picks" ? "Picking your best fits" : ev.text);
         } else if (ev.type === "card") {
