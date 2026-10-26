@@ -84,7 +84,7 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 | `OPENAI_API_KEY` | OpenAI API access | required for OpenAI chat |
 | `OPENAI_MODEL` | Responses API model supporting structured outputs | `gpt-4.1-mini` |
 | `OPENAI_ROUTER_MODEL` | Optional separate routing/query-expansion model | same as `OPENAI_MODEL` |
-| `SEARCH_QUERY_EXPANSION` | Expand conversational interests into keyword queries; `0` disables | `1` |
+| `SEARCH_QUERY_EXPANSION` | Optional AI query rewrites; `0` uses deterministic topic expansion only, `1` opts in to AI rewrites | `0` |
 | `GOOGLE_CLIENT_ID` | Google sign-in ([guide](docs/google-signin.md)) | required |
 | `SESSION_SECRET` | Signs login cookies | required |
 | `ALLOWED_EMAIL_DOMAINS` | Comma-separated domains allowed to sign in | `college.harvard.edu` |
@@ -214,3 +214,21 @@ A partial catalog snapshot may lack requirement details for some courses. Q repo
 a separate authorized HarvardKey import; omitting `--term` imports all indexed semesters.
 Do not transfer `.env`, `.browser-profile`, or `app/data/qurated.db` as part of catalog setup.
 No Q reviews in the loaded data does not establish that a course is new.
+
+### Predictable course retrieval
+
+By default, course search uses fixed topic synonyms, catalog filters, and BM25 keyword ranking.
+For example, CS + design also searches human-computer interaction and user interfaces. Known
+algorithm/circuit/compiler design requests keep their specific meaning. Topic families are versioned
+in `app/search_planner.py`; unfamiliar topics retain their literal keywords. AI-written answers can
+still vary, but candidate retrieval is repeatable for the same loaded data, request, history,
+preferences, and filters. Equal-ranked courses use ascending course code as a stable tie-breaker.
+
+`SEARCH_QUERY_EXPANSION=1` explicitly enables additional AI query rewrites and makes candidate
+retrieval non-deterministic. Existing installations with that setting should change it to `0` and
+restart to use deterministic retrieval. No AI rewrite is required for the default search path.
+
+Subject, Gen Ed, term, and workload constraints are enforced before ranking, including for explicitly
+named courses. A minimum Q score excludes missing values. A failed topic search does not silently
+fall back to unrelated courses, and workload limits are not silently relaxed. “Light”, “easy”, and
+“manageable” currently mean at most six reported hours/week, or a stricter saved/selected cap.

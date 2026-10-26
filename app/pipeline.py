@@ -105,9 +105,9 @@ def plan(db, message, preferences, history=()):
         query = re.sub(r"\b(?:CS|COMPSCI|computer science)\b", " ", query, flags=re.I)
     query = re.sub(r"\b(light|easy|chill|less work|low workload|not much work|manageable|fulfill|fulfills|satisfy|satisfies|requirements?|interested|someone)\b", " ", query, flags=re.I)
     query = " ".join(tokenize(query))
-    return {"queries": [query], "codes": codes, "max_workload": min(6, pref_cap) if light and pref_cap else 6 if light else (pref_cap or 0), "term": term,
+    return search_planner.deterministic({"queries": [query], "codes": codes, "max_workload": min(6, pref_cap) if light and pref_cap else 6 if light else (pref_cap or 0), "term": term,
             "gen_ed": bool(category or re.search(r"\bgen ?eds?\b|general education", m)),
-            "gen_ed_category": category, "code_suggestions": suggestions, "subject": subject}
+            "gen_ed_category": category, "code_suggestions": suggestions, "subject": subject})
 
 
 def describe_filters(f):

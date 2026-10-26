@@ -38,7 +38,7 @@ def test_semantic_expansion_recovers_relevant_course_and_preserves_subject(monke
     db,target=design_database()
     question='CS classes for someone interested in design'
     baseline=pipeline.plan(db,question,{})
-    assert target not in {c['code'] for c in pipeline.retrieve(db,baseline)}
+    assert target in {c['code'] for c in pipeline.retrieve(db,baseline)}
     expanded=search_planner.expand(fake_client({'queries':['human computer interaction user interfaces',
                                                           'usability prototyping visualization']}),baseline,question,[])
     results=pipeline.retrieve(db,expanded)
@@ -85,3 +85,44 @@ def test_history_is_bounded_and_supplied_as_data(monkeypatch):
     search_planner.expand(c,baseline,'any more options?',[{'role':'user','content':'x'*900}]*10)
     assert len(captured['recent_conversation'])==4
     assert all(len(t['content'])==500 for t in captured['recent_conversation'])
+
+
+def test_default_search_does_not_call_ai_and_recovers_design_interest(monkeypatch):
+    monkeypatch.delenv('SEARCH_QUERY_EXPANSION', raising=False)
+    db, target = design_database()
+    p = pipeline.plan(db, 'CS classes for someone interested in design', {})
+    assert search_planner.expand(None, p, 'CS design', []) == p
+    assert target in {c['code'] for c in pipeline.retrieve(db, p)}
+    assert p == pipeline.plan(db, 'CS classes for someone interested in design', {})
+
+
+def test_algorithm_design_does_not_expand_to_user_interfaces():
+    p = pipeline.plan(database(), 'CS classes about algorithm design', {})
+    assert p['queries'] == ['algorithm design']
+
+
+@pytest.mark.parametrize('question, expected', [
+    ('classes about AI', 'neural networks deep learning'),
+    ('classes about climate', 'environment sustainability'),
+    ('courses about cinema', 'filmmaking moving images'),
+    ('creative writing classes', 'poetry storytelling workshop'),
+    ('cybersecurity classes', 'computer security cryptography'),
+])
+def test_known_topics_use_fixed_expansions(question, expected):
+    p = pipeline.plan(database(), question, {})
+    assert expected in p['queries']
+    assert len(p['queries']) <= 3
+
+
+def test_unknown_topics_remain_literal():
+    assert pipeline.plan(database(), 'classes about underwater archaeology', {})['queries'] == ['underwater archaeology']
+
+
+def test_ranking_does_not_depend_on_course_insertion_order():
+    db = database()
+    p = pipeline.plan(db, 'interesting courses', {})
+    before = [c['code'] for c in pipeline.retrieve(db, p)]
+    db.courses = dict(reversed(list(db.courses.items())))
+    db._build_index()
+    assert [c['code'] for c in pipeline.retrieve(db, p)] == before
+    assert before == sorted(before)

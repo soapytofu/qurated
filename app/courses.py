@@ -123,7 +123,7 @@ class CourseDB:
 
     def reload(self):
         grouped = defaultdict(list)
-        for path in self.reports_dir.glob("*.json"):
+        for path in sorted(self.reports_dir.glob("*.json")):
             if self.before and path.stat().st_mtime > self.before:
                 continue
             try:
@@ -201,7 +201,7 @@ class CourseDB:
                 continue
             by_code[row["code"]].append(row)
         details = defaultdict(dict)  # code -> merged course-level fields (first non-empty wins)
-        for path in (CATALOG_DIR / "details").glob("*.json"):
+        for path in sorted((CATALOG_DIR / "details").glob("*.json")):
             try:
                 d = json.loads(path.read_text())
             except json.JSONDecodeError:
@@ -439,7 +439,7 @@ class CourseDB:
             quality = ((o["recommend_mean"] or 3) - 3) * min(n, 30) / 30
             offered_soon = 0.5 if self._next(c)[0] else 0.0  # students are planning upcoming terms
             results.append((relevance + quality + offered_soon, code))
-        results.sort(reverse=True)
+        results.sort(key=lambda row: (-row[0], row[1]))
         return [self.brief(code, filters=filters) for _, code in results[:limit]]
 
     def brief(self, code, filters=None):
