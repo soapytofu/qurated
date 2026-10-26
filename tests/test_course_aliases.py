@@ -134,3 +134,14 @@ def test_equivalence_lookups_are_cached_per_index_snapshot(monkeypatch):
     db._build_index()
     assert db.is_taken('COMPSCI 1240', {'cs124'})
     assert len(calls) == 4
+
+
+def test_named_course_does_not_fall_back_to_other_courses_mentioning_its_code():
+    from pipeline import plan, retrieve
+    db = cs_database()
+    db.courses['TEST 1']['catalog']['description'] = 'Students who took CS124 sometimes take this unrelated course.'
+    db._build_index()
+    p = plan(db, 'Tell me about CS124', {})
+    assert [c['code'] for c in retrieve(db, p)] == ['COMPSCI 1240']
+    assert retrieve(db, p, taken={'CS124'}) == []
+    assert plan(db, 'Courses except CS124', {})['clarifications']

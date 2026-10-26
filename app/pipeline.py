@@ -129,7 +129,11 @@ def plan(db, message, preferences, history=()):
         light = None
     pref_cap = (preferences or {}).get("max_workload_hrs") or 0
     codes, suggestions = [], {}
-    for raw in CODE_RE.findall(message):
+    for match in CODE_RE.finditer(message):
+        raw = match.group()
+        if search_constraints.negated(match):
+            extracted["clarifications"].append('Please clarify whether you want information about the named course or alternatives to it.')
+            continue
         c = db.lookup(" ".join(raw.split()).upper()) or db.lookup(re.sub(r"(\D)(\d)", r"\1 \2", raw, 1).upper())
         if c and c["code"] not in codes:
             codes.append(c["code"])
@@ -151,7 +155,8 @@ def plan(db, message, preferences, history=()):
         query = LIGHT_WORKLOAD.sub(" ", query)
     query = re.sub(r"\b(fulfill|fulfills|satisfy|satisfies|requirements?|interested|someone)\b", " ", query, flags=re.I)
     query = " ".join(tokenize(query))
-    return search_planner.deterministic(finish({"queries": [query], "codes": codes, "max_workload": min(6, pref_cap) if light and pref_cap else 6 if light else (pref_cap or 0), "term": term,
+    queries = [] if codes and not re.search(r"\b(like|similar to|alternatives to|instead of)\b", message, re.I) else [query]
+    return search_planner.deterministic(finish({"queries": queries, "codes": codes, "max_workload": min(6, pref_cap) if light and pref_cap else 6 if light else (pref_cap or 0), "term": term,
             "gen_ed": bool(category or re.search(r"\bgen ?eds?\b|general education", m)),
             "gen_ed_category": category, "code_suggestions": suggestions, "subject": subject,
             "light_workload": bool(light)}))
