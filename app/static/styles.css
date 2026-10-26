@@ -437,3 +437,5 @@ body:has(dialog[open]), body.overlay-open { overflow:hidden; }
 .search-plan { max-width: 700px; margin: 12px 0; padding: 12px 16px; border: 1px solid var(--line); border-radius: 12px; font-size: 14px; overflow-wrap: anywhere; }
 .search-plan summary { cursor: pointer; font-weight: 500; }
 .search-plan p { margin: 8px 0 0; }
+
+.data-coverage { max-width: 760px; margin: 16px auto 0; color: var(--dark-text-2); font-size: 14px; line-height: 1.5; }

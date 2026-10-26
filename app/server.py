@@ -29,7 +29,7 @@ import llm
 from guardrails import has_sensitive_text, PRIVACY_REPLY
 from chat_state import ChatState
 from request_safety import RequestSafetyMiddleware
-from courses import EXTRA_Q_SCORES, CATALOG_DIR, CourseDB, REPORTS_DIR, TAGS_FILE, GEN_EDS
+from courses import EXTRA_Q_SCORES, CATALOG_DIR, CourseDB, REPORTS_DIR, TAGS_FILE, GEN_EDS, term_rank
 
 load_dotenv(Path(__file__).parent / ".env")
 
@@ -663,9 +663,15 @@ def cards(codes: list[str], user=Depends(current_user)):
 @app.get("/api/meta")
 def meta(user=Depends(current_user)):
     _maybe_reload()
-    terms = sorted({o["term"] for c in db.courses.values() for o in c["offerings"]})
-    n_comments = sum(len(c["comments"]) for c in db.courses.values())
-    return {"courses": len(db.courses), "terms": terms, "comments": n_comments, "departments": db.departments()}
+    snapshot = db
+    records = list(snapshot.courses.values())
+    terms = sorted({o["term"] for c in records for o in c["offerings"]}, key=term_rank)
+    catalog_terms = sorted({o["term"] for c in records for o in (c.get("catalog") or {}).get("offered", [])}, key=term_rank)
+    return {"courses": len(records), "terms": terms, "catalog_terms": catalog_terms,
+            "catalog_courses": sum(bool((c.get("catalog") or {}).get("offered")) for c in records),
+            "reviewed_courses": sum(bool(c["offerings"]) for c in records),
+            "reports": sum(len(c["offerings"]) for c in records),
+            "comments": sum(len(c["comments"]) for c in records), "departments": snapshot.departments()}
 
 
 # ---- Saved account data ----

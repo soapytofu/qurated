@@ -106,3 +106,22 @@ def test_missing_catalog_does_not_charge_or_call_model(monkeypatch):
         assert 'catalog has not been loaded' in response.json()['detail']
     finally:
         server.app.dependency_overrides.clear()
+
+
+def test_metadata_distinguishes_catalog_review_and_historical_coverage(monkeypatch):
+    from test_retrieval import database
+    db = database()
+    db.courses['TEST 0']['offerings'] = [{'term': '2026 Spring'}, {'term': '2025 Fall'}, {'term': '2026 Fall'}]
+    db.courses['TEST 1']['catalog'] = None
+    monkeypatch.setattr(server, 'db', db)
+    monkeypatch.setattr(server, '_maybe_reload', lambda: None)
+    result = server.meta(user={})
+    assert result['courses'] == 50
+    assert result['catalog_courses'] == 49
+    assert result['reviewed_courses'] == 1
+    assert result['reports'] == 3
+    assert result['terms'] == ['2025 Fall', '2026 Spring', '2026 Fall']
+    assert result['catalog_terms'] == ['2026 Fall', '2027 Spring']
+    db.courses = {}
+    assert server.meta(user={})['catalog_courses'] == 0
+    assert server.meta(user={})['reviewed_courses'] == 0
