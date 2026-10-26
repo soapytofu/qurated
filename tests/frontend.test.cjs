@@ -53,3 +53,15 @@ for (const exit of ['complete', 'skip', 'close', 'escape']) {
     assert.equal(node('#guide-welcome').hidden, true);
   });
 }
+
+vm.runInContext(extract('function dataCoverageText', 'api("/api/meta")'), sandbox);
+test('coverage distinguishes empty, catalog-only, historical-only and mixed data', () => {
+  assert.match(sandbox.dataCoverageText({courses: 0}), /No course data/);
+  assert.match(sandbox.dataCoverageText({courses: 4, catalog_courses: 4, reviewed_courses: 0}), /No Q Guide reviews/);
+  assert.match(sandbox.dataCoverageText({courses: 4, catalog_courses: 0, reviewed_courses: 4}), /catalog is missing/);
+  const mixed = sandbox.dataCoverageText({courses: 10, catalog_courses: 8, reviewed_courses: 3, terms: ['2025 Fall', '2026 Spring']});
+  assert.match(mixed, /8 courses in the catalog/);
+  assert.match(mixed, /3 courses with Q Guide reports/);
+  assert.match(mixed, /2025 Fall, 2026 Spring/);
+  assert.doesNotMatch(mixed, /undefined/);
+});

@@ -637,10 +637,21 @@ function countUp(el, to) {
   };
   requestAnimationFrame(step);
 }
-api("/api/meta").then((r) => r.json()).then((m) => {
-  if (!m.courses) return;
-  const span = m.terms.length > 1 ? `${m.terms[0]} – ${m.terms[m.terms.length - 1]}` : m.terms[0];
-  $("#hero-sub").textContent = `Ask in plain English. Answers come straight from Q reports for ${m.courses.toLocaleString()} courses (${span}).`;
+function dataCoverageText(m) {
+  if (!m.courses) return "No course data has been loaded on this installation. Ask the person running Qurated to import the public catalog.";
+  if (!m.catalog_courses) return "Historical Q reviews are loaded, but the current course catalog is missing. Import the catalog to search upcoming schedules and requirements.";
+  if (!m.reviewed_courses) return "The course catalog is loaded. No Q Guide reviews are loaded yet; ratings and workload filters will exclude courses with unknown scores.";
+  const terms = m.terms.join(", ");
+  return `${m.catalog_courses.toLocaleString()} courses in the catalog · ${m.reviewed_courses.toLocaleString()} courses with Q Guide reports. Q terms: ${terms}. Coverage varies by course.`;
+}
+api("/api/meta").then((r) => {
+  if (!r.ok) throw new Error("coverage unavailable");
+  return r.json();
+}).then((m) => {
+  $("#data-coverage").textContent = dataCoverageText(m);
+  $("#hero-sub").textContent = m.courses
+    ? `Explore ${m.courses.toLocaleString()} courses using the catalog and reviews available here.`
+    : "Course search will be available after the catalog is imported.";
   const obs = new IntersectionObserver((entries) => {
     if (!entries[0].isIntersecting) return;
     countUp($("#st-courses"), m.courses);
@@ -649,7 +660,9 @@ api("/api/meta").then((r) => r.json()).then((m) => {
     obs.disconnect();
   }, { threshold: 0.4 });
   obs.observe($("#stats-tile"));
-}).catch(() => {});
+}).catch(() => {
+  $("#data-coverage").textContent = "Couldn't check data coverage. Refresh to try again.";
+});
 
 // ---------- feedback ----------
 const fbStatus = $("#fb-status");

@@ -251,3 +251,18 @@ def test_direct_search_accepts_compact_course_codes(page):
     page.locator('#f-show').click()
     expect(page.locator('.card')).to_have_count(1)
     expect(page.locator('.card')).to_contain_text('TEST 0')
+
+
+def test_empty_installation_shows_data_setup_message(page):
+    from playwright.sync_api import expect
+    page.route('**/api/meta', lambda route: route.fulfill(status=200, content_type='application/json',
+        body='{"courses":0,"catalog_courses":0,"reviewed_courses":0,"terms":[],"comments":0}'))
+    page.reload()
+    expect(page.locator('#data-coverage')).to_contain_text('No course data has been loaded')
+    expect(page.locator('#hero-sub')).to_contain_text('after the catalog is imported')
+    expect(page.locator('#hero-sub')).not_to_contain_text('undefined')
+
+
+def test_catalog_only_installation_explains_missing_reviews(page):
+    from playwright.sync_api import expect
+    expect(page.locator('#data-coverage')).to_contain_text('No Q Guide reviews are loaded yet')
