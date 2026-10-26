@@ -165,3 +165,17 @@ def test_more_workload_is_comparison_not_new_search():
     history = [{'role': 'assistant', 'content': '(Recommended: TEST 1, TEST 2)'}]
     p = plan(database(), 'Which of these has more workload?', {}, history)
     assert not p['queries'] and p['codes'] == ['TEST 1', 'TEST 2']
+
+
+def test_repeated_more_preserves_updated_criteria():
+    from pipeline import plan
+    history = [
+        {'role': 'user', 'content': 'Ethics and Civics Gen Eds in Fall 2026 under 5 hours'},
+        {'role': 'assistant', 'content': '(Recommended: TEST 1, TEST 2)'},
+        {'role': 'user', 'content': 'More options in Spring 2027 at most 8 hours'},
+        {'role': 'assistant', 'content': '(Recommended: TEST 0)'},
+    ]
+    p = plan(database(), 'more', {}, history)
+    assert p['term'] == '2027 Spring'
+    assert p['numeric_filters'] == {'max_workload': 8}
+    assert p['gen_ed_category'] == 'Ethics and Civics'

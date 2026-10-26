@@ -50,6 +50,9 @@ reflect grading now."""
 CODE_RE = re.compile(r"\b[A-Za-z][A-Za-z-]{1,9}\s?\d{1,4}[A-Za-z]{0,3}\b")
 REFERENT = re.compile(r"\b(those|these|them|they|which one|of the (two|three|four)|between|compare|vs\.?|versus|"
                       r"the first|the second|the last|that one|either)\b", re.I)
+LIGHT_WORKLOAD = re.compile(r"\b(?:(?:light|low|manageable) workload|light (?:courses?|classes?|gen ?eds?)|"
+                            r"easy|chill|manageable|less work|not much work)\b", re.I)
+
 MORE_OPTIONS = re.compile(r"\b(?:(?:more|other|different|additional) (?:options|courses|classes|recommendations)|"
                           r"alternatives|something else|(?:show|give)(?: me)? more)\b|^more[?!. ]*$", re.I)
 
@@ -82,11 +85,15 @@ def plan(db, message, preferences, history=()):
         previous = previous_picks(history)
         # Preserve the latest substantive search rather than searching the words "more options".
         baseline = None
-        for turn in reversed(history):
-            if turn["role"] == "user" and not (MORE_OPTIONS.search(turn["content"]) or REFERENT.search(turn["content"])):
-                candidate = plan(db, turn["content"], preferences)
-                if candidate["queries"] and not candidate["codes"]:
-                    baseline = candidate
+        for index in range(len(history) - 1, -1, -1):
+            turn = history[index]
+            if turn["role"] != "user":
+                continue
+            if MORE_OPTIONS.search(turn["content"]) and not previous_picks(history[:index]):
+                continue  # The original request has expired; fall back to known course titles.
+            candidate = plan(db, turn["content"], preferences, history[:index])
+            if candidate["queries"] and not candidate["codes"]:
+                baseline = candidate
                 break
         if baseline is None:
             titles = [(db.lookup(code) or {}).get("title", "") for code in previous]
@@ -116,10 +123,17 @@ def plan(db, message, preferences, history=()):
     category = next((name for name in GEN_EDS if
                      re.sub(r"[^a-z0-9]+", " ", name.lower()).strip() in normalized), None)
     term = extracted["term"]
-    light = re.search(r"\b(light|easy|chill|less work|low workload|not much work|manageable)\b", m)
+    light = LIGHT_WORKLOAD.search(message)
+    if light and search_constraints.negated(light):
+        extracted["clarifications"].append('Please specify the workload limit you want in hours/week, or use Filters.')
+        light = None
     pref_cap = (preferences or {}).get("max_workload_hrs") or 0
     codes, suggestions = [], {}
-    for raw in CODE_RE.findall(message):
+    for match in CODE_RE.finditer(message):
+        raw = match.group()
+        if search_constraints.negated(match):
+            extracted["clarifications"].append('Please clarify whether you want information about the named course or alternatives to it.')
+            continue
         c = db.lookup(" ".join(raw.split()).upper()) or db.lookup(re.sub(r"(\D)(\d)", r"\1 \2", raw, 1).upper())
         if c and c["code"] not in codes:
             codes.append(c["code"])
@@ -137,9 +151,12 @@ def plan(db, message, preferences, history=()):
         query = re.sub(pattern, " ", query, flags=re.I)
     if subject:
         query = re.sub(r"\b(?:CS|COMPSCI|computer science)\b", " ", query, flags=re.I)
-    query = re.sub(r"\b(light|easy|chill|less work|low workload|not much work|manageable|fulfill|fulfills|satisfy|satisfies|requirements?|interested|someone)\b", " ", query, flags=re.I)
+    if light:
+        query = LIGHT_WORKLOAD.sub(" ", query)
+    query = re.sub(r"\b(fulfill|fulfills|satisfy|satisfies|requirements?|interested|someone)\b", " ", query, flags=re.I)
     query = " ".join(tokenize(query))
-    return search_planner.deterministic(finish({"queries": [query], "codes": codes, "max_workload": min(6, pref_cap) if light and pref_cap else 6 if light else (pref_cap or 0), "term": term,
+    queries = [] if codes and not re.search(r"\b(like|similar to|alternatives to|instead of)\b", message, re.I) else [query]
+    return search_planner.deterministic(finish({"queries": queries, "codes": codes, "max_workload": min(6, pref_cap) if light and pref_cap else 6 if light else (pref_cap or 0), "term": term,
             "gen_ed": bool(category or re.search(r"\bgen ?eds?\b|general education", m)),
             "gen_ed_category": category, "code_suggestions": suggestions, "subject": subject,
             "light_workload": bool(light)}))
@@ -200,6 +217,8 @@ def effective_filters(p, selected=None):
 
 
 def retrieve(db, p, taken=frozenset(), k=8, filters=None):
+    if k <= 0:
+        return []
     taken = frozenset(taken) | frozenset(p.get("exclude", []))
     dept = None
     filters, conflicts = effective_filters(p, filters)
@@ -227,9 +246,17 @@ def retrieve(db, p, taken=frozenset(), k=8, filters=None):
                 continue  # same course under another code
             seen.add(b["code"]); seen |= cross; out.append(b)
     explicit = [db.brief(c["code"], filters=filters) for code in p["codes"][:6]
-                if (c := db.lookup(code)) and not db.is_taken(c["code"], taken) and db.matches(c, filters)]
+                if (c := db.filtered_lookup(code, filters, taken))]
     explicit_codes = {b["code"] for b in explicit}
-    cands = (explicit + [b for b in out if b["code"] not in explicit_codes])[:k]
+    cands, identities = [], set()
+    for candidate in explicit + out:
+        keys = db.identity_keys(candidate["code"])
+        if keys & identities:
+            continue
+        identities.update(keys)
+        cands.append(candidate)
+        if len(cands) >= k:
+            break
     enriched = []
     for i, b in enumerate(cands):
         is_explicit = b["code"] in explicit_codes

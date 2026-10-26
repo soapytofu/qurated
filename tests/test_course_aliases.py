@@ -59,3 +59,89 @@ def test_ambiguous_alias_is_not_automatically_selected_by_browse():
     db._build_index()
     assert db.lookup('OTHER1') is None
     assert db.browse(query='OTHER1')['cards'] == []
+
+
+def both_alias_records():
+    import copy
+    db = cs_database()
+    old = copy.deepcopy(db.courses['COMPSCI 1240'])
+    old['code'] = 'COMPSCI 124'
+    db.courses[old['code']] = old
+    db._build_index()
+    return db
+
+
+def test_known_equivalences_exclude_both_loaded_records_when_taken():
+    db = both_alias_records()
+    assert db.is_taken('COMPSCI 1240', {'CS124'})
+    assert db.is_taken('COMPSCI 124', {'CS1240'})
+    assert db.browse(query='CS1240', exclude={'CS124'})['total'] == 0
+
+
+def test_guardrails_canonicalize_to_allowed_equivalent_without_weakening_allowlist():
+    db = both_alias_records()
+    answer = dict(picks=[dict(code='CS124', reason='Fits your request.', quote='')], advice='Compare the details.')
+    picks, _ = validate_answer(answer, [{'code': 'COMPSCI 1240'}], [], db, lambda *a: None)
+    assert picks[0]['code'] == 'COMPSCI 1240'
+    with pytest.raises(ValueError):
+        validate_answer(answer, [{'code': 'TEST 1'}], [], db, lambda *a: None)
+    with pytest.raises(ValueError):
+        validate_answer(answer, [{'code': 'COMPSCI 1240'}], ['CS124'], db, lambda *a: None)
+
+
+def test_equivalent_records_are_not_recommended_twice():
+    from pipeline import plan, retrieve
+    db = both_alias_records()
+    p = plan(db, 'Compare CS124 and CS1240', {})
+    assert len(retrieve(db, p, k=2)) >= 1
+    codes = [c['code'] for c in retrieve(db, p)]
+    assert len(set(codes) & {'COMPSCI 124', 'COMPSCI 1240'}) == 1
+    answer = dict(picks=[dict(code=c, reason='Fits.', quote='') for c in ['CS124', 'CS1240']], advice='Compare details.')
+    picks, _ = validate_answer(answer, [{'code': 'COMPSCI 124'}, {'code': 'COMPSCI 1240'}], [], db, lambda *a: None)
+    assert len(picks) == 1
+
+
+def test_known_renumbered_course_uses_the_record_matching_selected_term():
+    from pipeline import plan, retrieve
+    db = both_alias_records()
+    db.courses['COMPSCI 124']['catalog'] = None
+    filters = {'term': '2027 Spring'}
+    assert db.browse(query='CS124', f=filters)['cards'][0]['code'] == 'COMPSCI 1240'
+    assert retrieve(db, plan(db, 'CS124', {}), filters=filters)[0]['code'] == 'COMPSCI 1240'
+    assert retrieve(db, plan(db, 'CS124', {}), taken={'CS124'}, filters=filters) == []
+
+
+def test_ambiguous_crosslist_is_not_allowed_even_with_one_candidate():
+    db = cs_database()
+    db.courses['TEST 1']['also_listed_as'] = ['OTHER 1']
+    db.courses['TEST 2']['also_listed_as'] = ['OTHER 1']
+    answer = dict(picks=[dict(code='OTHER 1', reason='Fits.', quote='')], advice='Check details.')
+    with pytest.raises(ValueError):
+        validate_answer(answer, [{'code': 'TEST 1'}], [], db, lambda *a: None)
+
+
+def test_equivalence_lookups_are_cached_per_index_snapshot(monkeypatch):
+    db = both_alias_records()
+    original = db.lookup
+    calls = []
+    def lookup(code):
+        calls.append(code)
+        return original(code)
+    monkeypatch.setattr(db, 'lookup', lookup)
+    for _ in range(20):
+        assert db.is_taken('COMPSCI 1240', {'cs124'})
+    assert len(calls) == 2
+    db._build_index()
+    assert db.is_taken('COMPSCI 1240', {'cs124'})
+    assert len(calls) == 4
+
+
+def test_named_course_does_not_fall_back_to_other_courses_mentioning_its_code():
+    from pipeline import plan, retrieve
+    db = cs_database()
+    db.courses['TEST 1']['catalog']['description'] = 'Students who took CS124 sometimes take this unrelated course.'
+    db._build_index()
+    p = plan(db, 'Tell me about CS124', {})
+    assert [c['code'] for c in retrieve(db, p)] == ['COMPSCI 1240']
+    assert retrieve(db, p, taken={'CS124'}) == []
+    assert plan(db, 'Courses except CS124', {})['clarifications']
