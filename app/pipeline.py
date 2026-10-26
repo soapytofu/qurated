@@ -11,7 +11,7 @@ import time
 from itertools import zip_longest
 import search_planner
 
-from courses import UPCOMING, GEN_EDS
+from courses import UPCOMING, GEN_EDS, tokenize
 from guardrails import POLICY, SAFE_FAILURE, validate_answer
 
 ANSWER_MODEL = "claude-sonnet-5-5"
@@ -96,8 +96,16 @@ def plan(db, message, preferences, history=()):
     query = re.sub(r"\bgen ?eds?\b|general education", " ", query, flags=re.I) if re.search(r"\bgen ?eds?\b|general education", m) else query
     subject = "COMPSCI" if (re.search(r"\b(?:CS|COMPSCI|computer science)\b", message, re.I)
                             and not re.search(r"\b(not|outside|except|avoid|or)\b", message, re.I)) else None
-    query = re.sub(r"\bCS\b", "computer science COMPSCI", query, flags=re.I)
-    return {"queries": [" ".join(query.split()) or message], "codes": codes, "max_workload": 6 if light else (pref_cap or 0), "term": term,
+    # Requirement names and subject constraints are filters, not topical keywords.
+    if category:
+        pattern = r"[\s,&]+".join(re.escape(word) for word in category.lower().replace(",", "").split())
+        pattern = pattern.replace("and", "(?:and|&)")
+        query = re.sub(pattern, " ", query, flags=re.I)
+    if subject:
+        query = re.sub(r"\b(?:CS|COMPSCI|computer science)\b", " ", query, flags=re.I)
+    query = re.sub(r"\b(light|easy|chill|less work|low workload|not much work|manageable|fulfill|fulfills|satisfy|satisfies|requirements?|interested|someone)\b", " ", query, flags=re.I)
+    query = " ".join(tokenize(query))
+    return {"queries": [query], "codes": codes, "max_workload": min(6, pref_cap) if light and pref_cap else 6 if light else (pref_cap or 0), "term": term,
             "gen_ed": bool(category or re.search(r"\bgen ?eds?\b|general education", m)),
             "gen_ed_category": category, "code_suggestions": suggestions, "subject": subject}
 
@@ -127,7 +135,11 @@ def retrieve(db, p, taken=frozenset(), k=8, filters=None):
             return []  # Do not silently replace a conflicting explicit filter.
         filters["gen_ed"] = p["gen_ed_category"]
     if p["term"] in UPCOMING:
-        filters.setdefault("term", p["term"])
+        if filters.get("term") and filters["term"] != p["term"]:
+            return []
+        filters["term"] = p["term"]
+    if p["max_workload"]:
+        filters["max_workload"] = min(filters.get("max_workload") or p["max_workload"], p["max_workload"])
     if p["gen_ed"] and not filters.get("gen_ed"):
         filters["any_gen_ed"] = True
     # Over-fetch when a term filter will prune results afterwards (search ranks before the term check).
@@ -137,12 +149,6 @@ def retrieve(db, p, taken=frozenset(), k=8, filters=None):
         limit = 40
     lists = [db.search(q, limit=limit, undergrad=True, exclude=taken, dept=dept, filters=filters,
                        max_workload=p["max_workload"] or None) for q in p["queries"]]
-    if p["max_workload"] and not any(lists):  # text-implied workload cap too strict: relax it (filters still apply)
-        lists = [db.search(q, limit=limit, undergrad=True, exclude=taken, dept=dept, filters=filters)
-                 for q in p["queries"]]
-    if filters and p["queries"] and not any(lists):
-        # Keywords + filters found nothing: fall back to the best-rated courses that satisfy the filters.
-        lists = [[db.brief(c["code"], filters=filters) for c in db.browse(filters, exclude=taken, limit=10)["cards"]]]
     seen, out = set(), []
     # Interleave query rankings so a literal query cannot crowd out semantic matches.
     for lst in zip_longest(*lists):
@@ -277,10 +283,6 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
         planner_cost = p.get("planner_cost", 0.0)
         yield sse({"type": "status", "text": "Searching courses"})
         filters = dict(filters or {})
-        if filters.get("term"):
-            p["term"] = filters["term"]
-        elif p["term"] in UPCOMING:
-            filters["term"] = p["term"]
         cands = retrieve(db, p, frozenset(taken), filters=filters)
         print(f"[retrieval] loaded={len(db.courses)} candidates={len(cands)} "
               f"category={p.get('gen_ed_category') or 'any'}", flush=True)
