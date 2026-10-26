@@ -29,7 +29,7 @@ import llm
 from guardrails import has_sensitive_text, PRIVACY_REPLY
 from chat_state import ChatState
 from request_safety import RequestSafetyMiddleware
-from courses import CATALOG_DIR, CourseDB, REPORTS_DIR, TAGS_FILE
+from courses import EXTRA_Q_SCORES, CATALOG_DIR, CourseDB, REPORTS_DIR, TAGS_FILE, GEN_EDS
 
 load_dotenv(Path(__file__).parent / ".env")
 
@@ -256,7 +256,10 @@ COURSE_WORDS = re.compile(r"\b(class|classes|course|courses|seminar|lecture|prof
 
 def needs_q_data(message, prior_questions):
     """Cheap pre-check so simple messages skip retrieval entirely. Leans toward searching."""
-    if COURSE_WORDS.search(message):
+    normalized = re.sub(r"[^a-z0-9]+", " ", message.lower().replace("&", "and"))
+    if (COURSE_WORDS.search(message)
+            or re.search(r"\bgen\s*eds?\b|\bgeneral education\b", normalized)
+            or any(re.sub(r"[^a-z0-9]+", " ", category.lower()) in normalized for category in GEN_EDS)):
         return True, 0.0
     try:
         r = client.with_options(timeout=10.0, max_retries=0).messages.create(
@@ -569,7 +572,8 @@ def clean_filters(f):
         out["term"] = f["term"]
     if isinstance(f.get("subject"), str) and re.fullmatch(r"[A-Z][A-Z-]{0,11}", f["subject"]):
         out["subject"] = f["subject"]
-    for k, lo, hi in (("min_overall", 1, 5), ("min_recommend", 1, 5), ("max_workload", 1, 40)):
+    for k, lo, hi in (("min_overall", 1, 5), ("min_recommend", 1, 5),
+                      ("min_instructor", 1, 5), ("min_lectures", 1, 5), *( ("min_" + field, 1, 5) for field, *_ in EXTRA_Q_SCORES), ("max_workload", 1, 40)):
         try:
             v = float(f.get(k) or 0)
             if lo <= v <= hi:

@@ -100,3 +100,35 @@ def test_empty_catalog_and_no_matches_do_not_call_answer_model(monkeypatch):
         texts = ' '.join(e.get('text', e.get('delta', '')) for e in events)
         assert ('not been loaded' in texts) if empty else ('loaded catalog' in texts)
         assert not history
+
+
+def test_workload_cap_never_relaxes_and_also_applies_to_explicit_codes():
+    from courses import NO_Q
+    db = database()
+    db.courses['TEST 0']['offerings'] = [{**NO_Q, 'workload_hrs_mean': 9}]
+    p = dict(queries=['Interesting'], codes=['TEST 0'], term='any', gen_ed=False, max_workload=6)
+    assert retrieve(db, p) == []
+    db.courses['TEST 0']['offerings'][0]['workload_hrs_mean'] = 5
+    assert [c['code'] for c in retrieve(db, p)] == ['TEST 0']
+    assert retrieve(db, p, filters={'max_workload': 4}) == []
+
+
+def test_topic_miss_does_not_return_unrelated_filtered_courses():
+    from pipeline import plan
+    db = database()
+    p = plan(db, 'CS classes about underwater basketweaving', {})
+    # A general subject request can browse; a specific topic must actually match.
+    p['subject'] = 'TEST'
+    assert retrieve(db, p) == []
+    assert retrieve(db, dict(queries=[''], codes=[], term='any', gen_ed=False, max_workload=0),
+                    filters={'subject': 'TEST'})
+
+
+def test_conflicting_terms_do_not_override_each_other():
+    p = dict(queries=['Interesting'], codes=['TEST 0'], term='2027 Spring', gen_ed=False, max_workload=0)
+    assert retrieve(database(), p, filters={'term': '2026 Fall'}) == []
+
+
+def test_light_workload_preserves_stricter_saved_preference():
+    from pipeline import plan
+    assert plan(database(), 'easy classes', {'max_workload_hrs': 3})['max_workload'] == 3
