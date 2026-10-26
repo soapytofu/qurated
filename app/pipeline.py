@@ -50,6 +50,9 @@ reflect grading now."""
 CODE_RE = re.compile(r"\b[A-Za-z][A-Za-z-]{1,9}\s?\d{1,4}[A-Za-z]{0,3}\b")
 REFERENT = re.compile(r"\b(those|these|them|they|which one|of the (two|three|four)|between|compare|vs\.?|versus|"
                       r"the first|the second|the last|that one|either)\b", re.I)
+MORE_OPTIONS = re.compile(r"\b(?:(?:more|other|different|additional) (?:options|courses|classes|recommendations)|"
+                          r"alternatives|something else|(?:show|give)(?: me)? more)\b|^more[?!. ]*$", re.I)
+
 RECOMMENDED = re.compile(r"\(Recommended: ([^)]*)\)")
 POOL = re.compile(r"\(Discussing: ([^)]*)\)")
 
@@ -64,7 +67,7 @@ def previous_picks(history):
 
 
 def is_follow_up(message, history):
-    return bool(previous_picks(history)) and bool(REFERENT.search(message))
+    return bool(previous_picks(history)) and bool(REFERENT.search(message) or MORE_OPTIONS.search(message))
 
 
 def plan(db, message, preferences, history=()):
@@ -75,12 +78,36 @@ def plan(db, message, preferences, history=()):
         return {**value, "numeric_filters": extracted["filters"], "term": extracted["term"],
                 "clarifications": extracted["clarifications"]}
 
-    if is_follow_up(message, history) and re.search(
-            r"\b(more (options|courses|classes)|other (options|courses|classes)|alternatives|something else)\b", message, re.I):
+    if is_follow_up(message, history) and MORE_OPTIONS.search(message):
         previous = previous_picks(history)
-        titles = [(db.lookup(code) or {}).get("title", "") for code in previous]
-        return finish({"queries": [" ".join(titles) or message], "codes": [], "exclude": previous,
-                "max_workload": (preferences or {}).get("max_workload_hrs") or 0, "term": "any", "gen_ed": False})
+        # Preserve the latest substantive search rather than searching the words "more options".
+        baseline = None
+        for turn in reversed(history):
+            if turn["role"] == "user" and not (MORE_OPTIONS.search(turn["content"]) or REFERENT.search(turn["content"])):
+                candidate = plan(db, turn["content"], preferences)
+                if candidate["queries"] and not candidate["codes"]:
+                    baseline = candidate
+                break
+        if baseline is None:
+            titles = [(db.lookup(code) or {}).get("title", "") for code in previous]
+            baseline = {"queries": [" ".join(titles)], "codes": [], "term": "any", "gen_ed": False,
+                        "max_workload": (preferences or {}).get("max_workload_hrs") or 0}
+        shown = []
+        for turn in history:
+            if turn["role"] == "assistant":
+                for match in RECOMMENDED.finditer(turn["content"]):
+                    shown.extend(code.strip() for code in match.group(1).split(","))
+        value = finish({**baseline, "codes": [], "exclude": list(dict.fromkeys(shown + previous))})
+        value["term"] = extracted["term"] if extracted["term"] != "any" else baseline["term"]
+        value["numeric_filters"] = {**baseline.get("numeric_filters", {}), **extracted["filters"]}
+        if any(key in extracted["filters"] for key in ("max_workload", "workload_under")):
+            value["max_workload"] = (preferences or {}).get("max_workload_hrs") or 0
+            value["light_workload"] = False
+            # The new explicit bound replaces the prior conversational bound.
+            for key in ("max_workload", "workload_under"):
+                if key not in extracted["filters"]:
+                    value["numeric_filters"].pop(key, None)
+        return value
     if is_follow_up(message, history):
         # "Which of those...": answer over the courses we just recommended, no new search.
         return finish({"queries": [], "codes": previous_picks(history)[:6], "max_workload": 0, "term": "any", "gen_ed": False})

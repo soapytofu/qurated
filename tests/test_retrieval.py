@@ -132,3 +132,36 @@ def test_conflicting_terms_do_not_override_each_other():
 def test_light_workload_preserves_stricter_saved_preference():
     from pipeline import plan
     assert plan(database(), 'easy classes', {'max_workload_hrs': 3})['max_workload'] == 3
+
+
+def test_plain_more_options_preserves_search_and_excludes_all_shown_courses():
+    from pipeline import plan, is_follow_up
+    from courses import NO_Q
+    db = database()
+    for course in db.courses.values():
+        course['offerings'] = [{**NO_Q, 'workload_hrs_mean': 4}]
+    history = [
+        {'role': 'user', 'content': 'Ethics and Civics Gen Eds in Fall 2026 under 5 hours'},
+        {'role': 'assistant', 'content': '(Recommended: TEST 1, TEST 2)'},
+        {'role': 'user', 'content': 'Show me more options'},
+        {'role': 'assistant', 'content': '(Recommended: TEST 3, TEST 4)'},
+    ]
+    assert is_follow_up('more', history)
+    p = plan(db, 'more', {}, history)
+    assert p['gen_ed_category'] == 'Ethics and Civics'
+    assert p['term'] == '2026 Fall'
+    assert p['numeric_filters']['workload_under'] == 5
+    results = retrieve(db, p)
+    assert results
+    assert not {'TEST 0', 'TEST 1', 'TEST 2', 'TEST 3', 'TEST 4'} & {c['code'] for c in results}
+    assert all(c['gen_ed'] == 'Ethics and Civics' and c['workload_hrs'] < 5 for c in results)
+    updated = plan(db, 'More options in Spring 2027 at most 8 hours', {}, history)
+    assert updated['term'] == '2027 Spring'
+    assert updated['numeric_filters'] == {'max_workload': 8}
+
+
+def test_more_workload_is_comparison_not_new_search():
+    from pipeline import plan
+    history = [{'role': 'assistant', 'content': '(Recommended: TEST 1, TEST 2)'}]
+    p = plan(database(), 'Which of these has more workload?', {}, history)
+    assert not p['queries'] and p['codes'] == ['TEST 1', 'TEST 2']
