@@ -20,12 +20,24 @@ SCORE = re.compile(r"\b(?P<label>" + '|'.join(f'(?:{v})' for v in SCORE_LABELS.v
                    r"\s+(?:rated\s+)?(?:at least|minimum(?: of)?|>=|≥)\s*(?P<value>[+-]?\d+(?:\.\d+)?)"
                    r"(?:\s*(?:/\s*5|out of 5))?(?![\d.])", re.I)
 
+SCORE_PLUS = re.compile(r"\b(?P<label>" + '|'.join(f'(?:{v})' for v in SCORE_LABELS.values()) + r")"
+                       r"\s+(?:rated\s+)?(?P<value>[+-]?\d+(?:\.\d+)?)\s*\+", re.I)
+
+
+def negated(match):
+    """A negated recognized constraint must not be interpreted as a positive one."""
+    return bool(re.search(r"\b(?:not|never|except|excluding|avoid|don't want|do not want)"
+                          r"(?:\s+(?:in|during|for|with))?\s*$", match.string[:match.start()], re.I))
+
 
 def extract(message):
     """Return remaining topic text, exact numerical filters, term and clarification messages."""
     terms, filters, clarifications = [], {}, []
 
     def term(match):
+        if negated(match):
+            clarifications.append('Please state the term or numerical limit you want, rather than a negated constraint. You can also use Filters.')
+            return ' '
         season = (match['season'] or match['season_second']).title().replace('Autumn', 'Fall')
         year = match['year'] or match['year_first']
         value = f'{year} {season}' if year else next((t for t in UPCOMING if t.endswith(season)), None)
@@ -37,6 +49,9 @@ def extract(message):
         return ' '
 
     def workload(match):
+        if negated(match):
+            clarifications.append('Please state the term or numerical limit you want, rather than a negated constraint. You can also use Filters.')
+            return ' '
         value = float(match['value'])
         if not 0 < value <= 40:
             clarifications.append('Please use a workload limit greater than 0 and at most 40 hours/week.')
@@ -46,6 +61,9 @@ def extract(message):
         return ' '
 
     def score(match):
+        if negated(match):
+            clarifications.append('Please state the term or numerical limit you want, rather than a negated constraint. You can also use Filters.')
+            return ' '
         value = float(match['value'])
         if not 1 <= value <= 5:
             clarifications.append('Q ratings are out of 5. Please choose a minimum between 1 and 5.')
@@ -57,6 +75,7 @@ def extract(message):
     remaining = TERM.sub(term, message)
     remaining = WORKLOAD.sub(workload, remaining)
     remaining = SCORE.sub(score, remaining)
+    remaining = SCORE_PLUS.sub(score, remaining)
     if len(terms) > 1:
         clarifications.append('Please choose one term per search: ' + ' or '.join(terms) + '.')
     return {'query': remaining, 'filters': filters, 'term': terms[0] if len(terms) == 1 else 'any',

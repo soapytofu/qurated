@@ -80,3 +80,25 @@ def test_search_summary_and_model_receive_effective_filters(monkeypatch):
     summary = next(e for e in events if e['type'] == 'search_plan')
     assert 'effective lectures ≥ 4.5' in summary['criteria']
     assert summary['queries'] == []
+
+
+@pytest.mark.parametrize('question', ['CS courses not under 5 hours', 'classes not in Spring 2027',
+    'courses not at most 4 hours', 'not easy courses', 'avoid Spring 2027'])
+def test_negated_constraints_require_clarification(question):
+    p = plan(database(), question, {})
+    assert p['clarifications']
+    assert retrieve(database(), p) == []
+
+
+def test_light_as_an_academic_topic_does_not_add_a_workload_cap():
+    p = plan(database(), 'courses about light and optics', {})
+    assert p['max_workload'] == 0
+    assert p['queries'] == ['light optics']
+    assert plan(database(), 'courses with a light workload', {})['max_workload'] == 6
+    assert plan(database(), 'light courses', {})['max_workload'] == 6
+
+
+@pytest.mark.parametrize('question, expected', [('lectures rated 4.5+', {'min_lectures': 4.5}),
+    ('overall rating 4+', {'min_overall': 4}), ('instructor accessibility 3.5+', {'min_accessibility': 3.5})])
+def test_score_plus_notation(question, expected):
+    assert extract(question)['filters'] == expected
