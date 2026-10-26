@@ -90,6 +90,7 @@ function cardHTML(c) {
         <div class="stat"><div class="n">${fmt(c.workload_hrs)}<small>hrs</small></div><div class="l">Per week</div></div>
         <div class="stat"><div class="n">${fmt(c.recommend)}</div><div class="l">Recommend</div></div>
       </div>`}
+      ${c.instructor_score != null || c.effective_lectures != null ? `<p class="meta">Instructor ${fmt(c.instructor_score)} · Effective lectures ${fmt(c.effective_lectures)}<br>Latest Q report: ${esc(c.q_term || "term unavailable")}; instructors may differ.</p>` : ""}
       <div class="card-foot">
         <div class="who"><span class="avatar">${esc(initials(prof))}</span><span>${esc(prof + more)}</span></div>
         <div class="term">${esc(c.term || "")}</div>
@@ -550,10 +551,10 @@ async function openDetail(code) {
     ${catalogHTML(c.catalog)}
     ${c.offerings.length ? `<h3 class="sub">Q report history</h3>` : '<p class="no-q">No Q Guide reviews available in the loaded data</p>'}
     <table class="offerings"${c.offerings.length ? "" : " hidden"}>
-      <thead><tr><th>Term</th><th>Instructor</th><th>Overall</th><th>Hrs/wk</th><th>Recommend</th><th>Responses</th></tr></thead>
+      <thead><tr><th>Term</th><th>Instructor</th><th>Overall</th><th>Hrs/wk</th><th>Recommend</th><th>Instructor rating</th><th>Effective lectures</th><th>Responses</th></tr></thead>
       <tbody>${c.offerings.map((o) => `
         <tr><td>${esc(o.term)}</td><td>${esc(o.instructors.join(", "))}</td><td>${fmt(o.course_overall, 2)}</td>
-        <td>${fmt(o.workload_hrs_mean)}</td><td>${fmt(o.recommend_mean, 2)}</td><td>${fmt(o.responded, 0)}/${fmt(o.invited, 0)}</td></tr>`).join("")}
+        <td>${fmt(o.workload_hrs_mean)}</td><td>${fmt(o.recommend_mean, 2)}</td><td>${fmt(o.instructor_score, 2)}</td><td>${fmt(o.effective_lectures, 2)}</td><td>${fmt(o.responded, 0)}/${fmt(o.invited, 0)}</td></tr>`).join("")}
       </tbody>
     </table>
     <div class="comments">
@@ -722,7 +723,7 @@ function filtersChanged() {
 
 $$(".segctl", fPanel).forEach((seg) => $$("button", seg).forEach((b) => b.addEventListener("click", () => {
   const v = b.dataset.v;
-  filters[seg.dataset.key] = seg.dataset.key === "min_overall" && v ? Number(v) : v;
+  filters[seg.dataset.key] = ["min_overall", "min_instructor", "min_lectures", "min_recommend"].includes(seg.dataset.key) && v ? Number(v) : v;
   filtersChanged();
 })));
 $$("#f-days button").forEach((b) => b.addEventListener("click", () => {
@@ -799,6 +800,9 @@ function describeFilters(state) {
   if (f.term) parts.push(f.term);
   if (f.subject) parts.push(f.subject);
   if (f.min_overall) parts.push(`rated ${f.min_overall}+`);
+  if (f.min_instructor) parts.push(`instructor ${f.min_instructor}+`);
+  if (f.min_lectures) parts.push(`effective lectures ${f.min_lectures}+`);
+  if (f.min_recommend) parts.push(`recommend ${f.min_recommend}+`);
   if (f.max_workload) parts.push(`≤ ${f.max_workload} hrs/wk`);
   if (f.gen_ed) parts.push(`Gen Ed: ${f.gen_ed}`);
   if (f.divisional) parts.push(f.divisional);

@@ -17,6 +17,27 @@ NO_Q = {"course_overall": None, "course_overall_fas_avg": None, "workload_hrs_me
 
 TERM_ORDER = {"Spring": 0, "Fall": 1}  # Fall comes after Spring within a calendar year
 
+
+def instructor_scores(qreport):
+    """Response-weighted scores across instructors in one report, never across terms."""
+    scores = {}
+    for field, prefix in (("instructor_score", "evaluate your instructor overall"),
+                          ("effective_lectures", "gives effective lectures or presentations")):
+        weighted = count = 0.0
+        for instructor in qreport.get("instructors", []):
+            for label, answer in instructor.get("questions", {}).items():
+                if not label.lower().startswith(prefix):
+                    continue
+                try:
+                    mean, n = float(answer["mean"]), float(answer["count"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if math.isfinite(mean) and math.isfinite(n) and 1 <= mean <= 5 and n > 0:
+                    weighted += mean * n
+                    count += n
+        scores[field] = weighted / count if count else None
+    return scores
+
 NOT_A_CLASS = re.compile(r"\b(tutorial|supervised|reading and research|directed (reading|research|writing)|"
                          r"independent (study|research)|dissertation|thesis|senior project)\b", re.I)
 NON_CLASS_COMPONENTS = {"Reading and Research", "Tutorial", "Thesis Research", "Doctoral Dissertation"}
@@ -89,6 +110,7 @@ class CourseDB:
                 s = q["summary"]
                 instructors = [i["name"] for i in q["instructors"] if i.get("name")] or r["instructors"]
                 offerings.append({
+                    **instructor_scores(q),
                     "term": r["term"],
                     "section": r.get("section"),
                     "instructors": instructors,
@@ -266,6 +288,8 @@ class CourseDB:
                 not any(x.split()[0] == f["subject"] for x in c["also_listed_as"]):
             return False
         for key, field, cmp in (("min_overall", "course_overall", "ge"), ("min_recommend", "recommend_mean", "ge"),
+                                ("min_instructor", "instructor_score", "ge"),
+                                ("min_lectures", "effective_lectures", "ge"),
                                 ("max_workload", "workload_hrs_mean", "le")):
             if f.get(key):
                 v = o.get(field)
@@ -395,6 +419,9 @@ class CourseDB:
             "latest_term": c["latest_term"],
             "instructors": c["instructors"],
             "overall": o["course_overall"],
+            "instructor_score": o.get("instructor_score"),
+            "effective_lectures": o.get("effective_lectures"),
+            "q_term": o.get("term"),
             "workload_hrs": o["workload_hrs_mean"],
             "recommend": o["recommend_mean"],
             "responded": o["responded"],
@@ -418,7 +445,7 @@ class CourseDB:
             return {**c, "comments": c["comments"][:max_comments], "total_comments": len(c["comments"])}
         # Trimmed view for the model: fewer, shorter comments and only the headline numbers (saves tokens).
         keep = ("term", "instructors", "course_overall", "course_overall_fas_avg", "workload_hrs_mean",
-                "recommend_mean", "responded", "enroll_reasons")
+                "recommend_mean", "responded", "enroll_reasons", "instructor_score", "effective_lectures")
         cat = dict(c.get("catalog") or {})
         if filters:
             cat["offered"] = [{**o, "sections": [sec for sec in o["sections"] if self.section_fits(sec, filters)]}
@@ -434,7 +461,7 @@ class CourseDB:
             "code": c["code"], "title": c["title"], "dept": c["dept"], "also_listed_as": c["also_listed_as"],
             "catalog": cat or None,
             "tags": c["tags"], "student_consensus": c["summary"],
-            "offerings": [{k: o[k] for k in keep} for o in c["offerings"]],
+            "offerings": [{k: o.get(k) for k in keep} for o in c["offerings"]],
             "comments": [x["text"][:350] for x in sorted(c["comments"], key=lambda x: -len(x["text"]))[:max_comments]],
             "total_comments": len(c["comments"]),
         }
@@ -479,6 +506,9 @@ class CourseDB:
             "gen_ed": cat.get("gen_ed"),
             "syllabus_url": cat.get("syllabus_url"),
             "has_q": bool(c["offerings"]),
+            "instructor_score": o.get("instructor_score"),
+            "effective_lectures": o.get("effective_lectures"),
+            "q_term": o.get("term"),
             "overall": o["course_overall"],
             "overall_fas_avg": o["course_overall_fas_avg"],
             "workload_hrs": o["workload_hrs_mean"],

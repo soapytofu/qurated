@@ -177,3 +177,16 @@ def test_failed_detail_has_recovery_message(page):
     expect(page.locator('#f-show')).to_be_enabled(); page.locator('#f-show').click()
     page.locator('.card').first.click()
     expect(page.locator('#detail-body')).to_contain_text('Couldn’t load this course')
+
+
+def test_instructor_filters_persist_and_apply_to_requests(page):
+    from playwright.sync_api import expect
+    page.locator('#open-filters').click()
+    with page.expect_request(lambda r: '/api/browse' in r.url and 'min_lectures' in (r.post_data or '')) as pending:
+        page.locator('[data-key="min_lectures"] button[data-v="4"]').click()
+    assert pending.value.post_data_json['filters']['min_lectures']==4
+    page.reload()
+    page.locator('#open-filters').click()
+    expect(page.locator('[data-key="min_lectures"] button[data-v="4"]')).to_have_attribute('aria-pressed','true')
+    page.locator('#f-reset').click()
+    expect(page.locator('[data-key="min_lectures"] button[data-v=""]')).to_have_attribute('aria-pressed','true')
