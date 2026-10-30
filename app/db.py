@@ -19,6 +19,7 @@ def _connect():
                                               PRIMARY KEY (email, code));
         CREATE TABLE IF NOT EXISTS taken (email TEXT, code TEXT, added_at INTEGER, PRIMARY KEY (email, code));
         CREATE TABLE IF NOT EXISTS prefs (email TEXT PRIMARY KEY, json TEXT, updated_at INTEGER);
+        CREATE TABLE IF NOT EXISTS spend (day TEXT PRIMARY KEY, usd REAL, answers INTEGER);
     """)
     return conn
 
@@ -72,3 +73,14 @@ def prefs(email):
 def set_prefs(email, data):
     _exec("INSERT INTO prefs VALUES (?, ?, ?) ON CONFLICT(email) DO UPDATE SET json=excluded.json, updated_at=excluded.updated_at",
           (email, json.dumps(data), int(time.time())))
+
+
+def add_spend(day, usd):
+    """Running Claude API spend per day; survives restarts so the daily budget can't be reset by a redeploy."""
+    _exec("INSERT INTO spend VALUES (?, ?, 1) ON CONFLICT(day) DO UPDATE SET usd=usd+excluded.usd, answers=answers+1",
+          (day, usd))
+
+
+def spend(day):
+    rows = _exec("SELECT usd, answers FROM spend WHERE day=?", (day,))
+    return rows[0] if rows else (0.0, 0)

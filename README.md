@@ -82,6 +82,8 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 | `SESSION_SECRET` | Signs login cookies | required |
 | `ALLOWED_EMAIL_DOMAINS` | Comma-separated domains allowed to sign in | `college.harvard.edu` |
 | `DAILY_QUESTION_LIMIT` | Questions per student per day | `40` |
+| `PER_MINUTE_QUESTION_LIMIT` | Questions per student per minute | `6` |
+| `DAILY_BUDGET_USD` | Total API spend per day; AI answers pause past it (Browse still works) | `20` |
 | `ADMIN_EMAILS` | Comma-separated admin emails | (none) |
 | `HTTPS_ONLY` | Set to `1` when served over HTTPS (secure cookies) | `0` |
 

@@ -5,10 +5,11 @@
 import json
 import os
 import re
+import threading
 import time
 import uuid
-from collections import defaultdict
-from datetime import date
+from collections import defaultdict, deque
+from datetime import date, datetime
 from pathlib import Path
 
 import anthropic
@@ -23,6 +24,7 @@ from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
 import db as store
+import guard
 import pipeline
 from courses import CATALOG_DIR, CourseDB, REPORTS_DIR, TAGS_FILE
 
@@ -44,7 +46,20 @@ GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 ALLOWED_DOMAINS = {d.strip().lower() for d in os.environ.get("ALLOWED_EMAIL_DOMAINS", "college.harvard.edu").split(",") if d.strip()}
 ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}  # see costs
 DAILY_LIMIT = int(os.environ.get("DAILY_QUESTION_LIMIT", "40"))  # per student, protects your API credit
+MINUTE_LIMIT = int(os.environ.get("PER_MINUTE_QUESTION_LIMIT", "6"))  # per student, stops rapid-fire spending
+DAILY_BUDGET = float(os.environ.get("DAILY_BUDGET_USD", "20"))  # all students: AI answers pause past this
+try:
+    from zoneinfo import ZoneInfo
+    CAMPUS_TZ = ZoneInfo("America/New_York")
+except Exception:  # noqa: BLE001 - no tz database: fall back to the server's clock
+    CAMPUS_TZ = None
+
+
+def today():
+    """Limits reset at midnight Boston time, whatever timezone the server runs in."""
+    return datetime.now(CAMPUS_TZ).date() if CAMPUS_TZ else date.today()
 questions_today: dict[tuple, int] = defaultdict(int)  # (email, date) -> count
+recent_questions: dict[str, deque] = defaultdict(deque)  # email -> times of questions in the last minute
 _report_count = len(list(REPORTS_DIR.glob("*.json")))
 
 SYSTEM = """You are Qurated, the Harvard Undergraduate Association's course advisor for Harvard College students. You help students find FAS courses \
@@ -136,6 +151,9 @@ TOOLS = [
 ]
 
 
+_reload_lock = threading.Lock()
+
+
 def _maybe_reload():
     """Pick up newly scraped reports while the scraper is still running."""
     global _report_count
@@ -145,9 +163,14 @@ def _maybe_reload():
     cat_mtime = max([sections.stat().st_mtime if sections.exists() else 0]
                     + [(CATALOG_DIR / "details").stat().st_mtime if (CATALOG_DIR / "details").exists() else 0])
     if n != _report_count or tags_mtime != db.tags_mtime or cat_mtime != getattr(db, "loaded_catalog_mtime", None):
-        db.loaded_catalog_mtime = cat_mtime
-        db.reload()
-        _report_count = n
+        if not _reload_lock.acquire(blocking=False):
+            return  # another request is already reloading; keep serving the current data meanwhile
+        try:
+            db.loaded_catalog_mtime = cat_mtime
+            db.reload()
+            _report_count = n
+        finally:
+            _reload_lock.release()
 
 
 def _verified_quote(code, quote):
@@ -376,14 +399,23 @@ def chat_stream(session_id, message, preferences, favorites, taken=(), use_prefe
 
 
 fast_sessions: dict[tuple, list] = {}  # (email, session id) -> plain-text turns for the fast pipeline
+chat_state: dict[tuple, dict] = {}  # same key -> remembered facts + last search (for "show more")
 
 
 def fast_chat_stream(session_key, message, preferences, favorites, taken=(), filters=None):
     """Production path: router -> server-side retrieval -> one streamed Sonnet call (see pipeline.py)."""
     _maybe_reload()
     history = fast_sessions.setdefault(session_key, [])
+    state = chat_state.setdefault(session_key, {})
     prior = prior_questions.setdefault(session_key, [])
-    if pipeline.is_follow_up(message, history):
+    blocked = guard.screen(message)
+    if blocked:  # refused in code: no model call, no cost
+        print(f"[guard] {blocked[0]} from {session_key[0]}: {message[:120]!r}", flush=True)
+        yield sse({"type": "text", "delta": blocked[1]})
+        yield sse({"type": "usage", "searched": False})
+        yield sse({"type": "done"})
+        return
+    if pipeline.is_follow_up(message, history) or pipeline.just_asked(history):
         search, router_cost = True, 0.0  # compare the courses we just showed
     else:
         search, router_cost = needs_q_data(message, prior)
@@ -391,7 +423,8 @@ def fast_chat_stream(session_key, message, preferences, favorites, taken=(), fil
     try:
         cost, secs = yield from pipeline.stream_answer(client, db, history, message, preferences, favorites,
                                                        list(taken), search, sse, db.card, _verified_quote,
-                                                       filters=filters)
+                                                       filters=filters, state=state)
+        store.add_spend(today().isoformat(), cost + router_cost)
         print(f"[usage] fast search={search} {secs:.1f}s ≈ ${cost + router_cost:.4f}", flush=True)
     except anthropic.AuthenticationError:
         yield sse({"type": "error", "text": "Missing or invalid ANTHROPIC_API_KEY. Add it to app/.env and restart."})
@@ -464,9 +497,13 @@ def logout(request: Request):
 
 @app.get("/api/me")
 def me(user=Depends(current_user)):
-    used = questions_today[(user["email"], date.today())]
-    return {**user, "questions_left": max(DAILY_LIMIT - used, 0), "daily_limit": DAILY_LIMIT,
-            "is_admin": user["email"] in ADMIN_EMAILS}
+    used = questions_today[(user["email"], today())]
+    out = {**user, "questions_left": max(DAILY_LIMIT - used, 0), "daily_limit": DAILY_LIMIT,
+           "is_admin": user["email"] in ADMIN_EMAILS}
+    if out["is_admin"]:
+        usd, answers = store.spend(today().isoformat())
+        out["spend_today"] = {"usd": round(usd, 2), "answers": answers, "budget_usd": DAILY_BUDGET}
+    return out
 
 
 # ---- Feedback ----
@@ -485,7 +522,7 @@ def feedback(body: Feedback, user=Depends(current_user)):
     text = body.message.strip()
     if not text:
         raise HTTPException(400, "Please write something first.")
-    key = (user["email"], date.today())
+    key = (user["email"], today())
     if feedback_today[key] >= 10:
         raise HTTPException(429, "Thanks! You've sent a lot of feedback today. Try again tomorrow.")
     feedback_today[key] += 1
@@ -545,7 +582,7 @@ def clean_filters(f):
             out["earliest_start"] = es
     except (TypeError, ValueError):
         pass
-    for k in ("qrd", "small_class", "has_reviews"):
+    for k in ("qrd", "small_class", "has_reviews", "include_grad"):
         if f.get(k) is True:
             out[k] = True
     return out
@@ -577,9 +614,21 @@ def browse(req: BrowseRequest, user=Depends(current_user)):
 
 @app.post("/api/chat")
 def chat(req: ChatRequest, user=Depends(current_user)):
-    key = (user["email"], date.today())
+    key = (user["email"], today())
+    if store.spend(key[1].isoformat())[0] >= DAILY_BUDGET:
+        raise HTTPException(429, "Qurated's AI answers are paused until tomorrow because of high demand. "
+                                 "Browse courses still works and has every course and review.")
     if questions_today[key] >= DAILY_LIMIT:
         raise HTTPException(429, f"You've hit today's limit of {DAILY_LIMIT} questions. Come back tomorrow!")
+    now = time.monotonic()
+    recent = recent_questions[user["email"]]
+    while recent and now - recent[0] > 60:
+        recent.popleft()
+    if len(recent) >= MINUTE_LIMIT:
+        wait = int(60 - (now - recent[0])) + 1
+        raise HTTPException(429, f"That's a lot of questions at once. Try again in {wait} seconds, or use "
+                                 "Browse courses, which has no limit.")
+    recent.append(now)
     questions_today[key] += 1
     sid = req.session_id or uuid.uuid4().hex
     email = user["email"]
@@ -589,6 +638,18 @@ def chat(req: ChatRequest, user=Depends(current_user)):
     return StreamingResponse(fast_chat_stream((email, sid), req.message[:2000], prefs, favs, taken,
                                               clean_filters(req.filters)),
                              media_type="text/event-stream", headers={"X-Session-Id": sid})
+
+
+class MoreRequest(BaseModel):
+    session_id: str
+
+
+@app.post("/api/more")
+def more(req: MoreRequest, user=Depends(current_user)):
+    """'Show more like these': next matches for the chat's last search, straight from the index (no AI cost)."""
+    state = chat_state.get((user["email"], req.session_id)) or {}
+    codes = pipeline.more_like(db, state, store.taken(user["email"]))
+    return {"cards": [c for c in map(db.card, codes) if c]}
 
 
 @app.get("/api/course/{code}")
@@ -613,7 +674,7 @@ def meta(user=Depends(current_user)):
 
 
 # ---- Saved account data ----
-PREF_KEYS = {"concentration", "year", "interests", "requirements", "max_workload_hrs", "style", "avoid"}
+PREF_KEYS = {"concentration", "year", "interests", "requirements", "max_workload_hrs", "style", "avoid", "notes"}
 
 
 @app.get("/api/account")
@@ -658,7 +719,8 @@ def remove_taken(code: str, user=Depends(current_user)):
 
 @app.put("/api/account/prefs")
 def set_prefs(prefs: dict, user=Depends(current_user)):
-    clean = {k: (v if isinstance(v, (int, float)) else str(v)[:300]) for k, v in prefs.items() if k in PREF_KEYS}
+    clean = {k: (v if isinstance(v, (int, float)) else str(v)[:600 if k == "notes" else 300])
+             for k, v in prefs.items() if k in PREF_KEYS}
     store.set_prefs(user["email"], clean)
     return {"ok": True}
 

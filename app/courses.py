@@ -117,9 +117,11 @@ class CourseDB:
             t = tags.get(code, {})
             c["tags"] = t.get("tags", [])
             c["summary"] = t.get("summary")
-        self.courses = courses
+        # Build the index first, then swap everything in at once so concurrent requests never see
+        # courses without their index entries.
+        doc_tf, idf, avg_len = self._build_index(courses)
+        self.courses, self.doc_tf, self.idf, self.avg_len = courses, doc_tf, idf, avg_len
         self.tags_mtime = TAGS_FILE.stat().st_mtime if TAGS_FILE.exists() else 0
-        self._build_index()
 
     def _merge_catalog(self, courses):
         """Attach my.harvard catalog data; catalog-only courses (no Q reports yet) become searchable too."""
@@ -159,11 +161,12 @@ class CourseDB:
                                  "offerings": [], "comments": []}
             courses[code]["catalog"] = cat
 
-    def _build_index(self):
-        self.doc_tf = {}
+    @staticmethod
+    def _build_index(courses):
+        doc_tf = {}
         df = Counter()
         lengths = []
-        for code, c in self.courses.items():
+        for code, c in courses.items():
             cat = c.get("catalog") or {}
             topics = " ".join(sec.get("topic") or "" for o in cat.get("offered", []) for sec in o["sections"])
             tokens = (tokenize(c["code"] + " " + c["title"]) * 4
@@ -174,12 +177,12 @@ class CourseDB:
                       + tokenize(" ".join(c["instructors"])) * 2
                       + tokenize(" ".join(x["text"] for x in c["comments"])))
             tf = Counter(tokens)
-            self.doc_tf[code] = (tf, len(tokens))
+            doc_tf[code] = (tf, len(tokens))
             df.update(tf.keys())
             lengths.append(len(tokens))
-        n = max(len(self.courses), 1)
-        self.idf = {t: math.log(1 + (n - d + 0.5) / (d + 0.5)) for t, d in df.items()}
-        self.avg_len = (sum(lengths) / n) if lengths else 1
+        n = max(len(courses), 1)
+        idf = {t: math.log(1 + (n - d + 0.5) / (d + 0.5)) for t, d in df.items()}
+        return doc_tf, idf, (sum(lengths) / n) if lengths else 1
 
     def _bm25(self, code, q_tokens, k1=1.4, b=0.75):
         tf, length = self.doc_tf[code]
@@ -224,15 +227,21 @@ class CourseDB:
         return out
 
     @staticmethod
-    def is_undergrad_class(c):
-        """Excludes graduate-level courses and research/tutorial/thesis listings."""
-        cat = c.get("catalog") or {}
-        level = (cat.get("level") or "").lower()
-        if "primarily for graduate" in level or level == "graduate course":
-            return False
-        if (cat.get("component") or "") in NON_CLASS_COMPONENTS:
+    def is_class(c):
+        """False for research/tutorial/thesis/independent-study listings."""
+        if ((c.get("catalog") or {}).get("component") or "") in NON_CLASS_COMPONENTS:
             return False
         return not NOT_A_CLASS.search(c["title"])
+
+    @staticmethod
+    def is_grad_level(c):
+        level = ((c.get("catalog") or {}).get("level") or "").lower()
+        return "primarily for graduate" in level or level == "graduate course"
+
+    @classmethod
+    def is_undergrad_class(cls, c):
+        """Excludes graduate-level courses and research/tutorial/thesis listings."""
+        return cls.is_class(c) and not cls.is_grad_level(c)
 
     # ---------------------------------------------------------------- structured filters
     # Keys (all optional): term, subject, min_overall, max_workload, min_recommend, gen_ed, divisional, qrd,
@@ -246,7 +255,7 @@ class CourseDB:
         f = f or {}
         cat = c.get("catalog") or {}
         o = self._q(c)
-        if not f.get("include_grad") and not self.is_undergrad_class(c):
+        if not self.is_class(c) or (not f.get("include_grad") and self.is_grad_level(c)):
             return False
         term = f.get("term")
         if term and not any(x["term"] == term for x in cat.get("offered", [])):
@@ -444,6 +453,7 @@ class CourseDB:
             "gen_ed": cat.get("gen_ed"),
             "syllabus_url": cat.get("syllabus_url"),
             "has_q": bool(c["offerings"]),
+            "grad_level": self.is_grad_level(c),
             "overall": o["course_overall"],
             "overall_fas_avg": o["course_overall_fas_avg"],
             "workload_hrs": o["workload_hrs_mean"],

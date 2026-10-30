@@ -400,3 +400,11 @@ main { max-width: 1024px; margin: 0 auto; padding: 0 22px 170px; }
 /* Visible keyboard focus everywhere */
 :focus-visible { outline: 3px solid rgba(165, 28, 48, .45); outline-offset: 2px; border-radius: 8px; }
 .globalnav :focus-visible { outline-color: rgba(224, 72, 94, .8); }
+
+/* Graduate-level pill, chat memory note, clarifying-question chips */
+.gened.grad { color: var(--crimson); }
+.memory-note { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; margin: 10px 0 2px; font-size: 13px; color: var(--text-2); }
+.memory-note .linkbtn { background: none; border: 0; padding: 0; font-size: 13px; color: var(--crimson); cursor: pointer; }
+.memory-note .linkbtn:hover { text-decoration: underline; }
+.memory-note .saved { color: var(--text-2); }
+.followups.clarify { margin-top: 10px; }
