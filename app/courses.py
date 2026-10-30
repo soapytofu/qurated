@@ -292,15 +292,21 @@ class CourseDB:
         return out
 
     @staticmethod
-    def is_undergrad_class(c):
-        """Excludes graduate-level courses and research/tutorial/thesis listings."""
-        cat = c.get("catalog") or {}
-        level = (cat.get("level") or "").lower()
-        if "primarily for graduate" in level or level == "graduate course":
-            return False
-        if (cat.get("component") or "") in NON_CLASS_COMPONENTS:
+    def is_class(c):
+        """False for research/tutorial/thesis/independent-study listings."""
+        if ((c.get("catalog") or {}).get("component") or "") in NON_CLASS_COMPONENTS:
             return False
         return not NOT_A_CLASS.search(c["title"])
+
+    @staticmethod
+    def is_grad_level(c):
+        level = ((c.get("catalog") or {}).get("level") or "").lower()
+        return "primarily for graduate" in level or level == "graduate course"
+
+    @classmethod
+    def is_undergrad_class(cls, c):
+        """Excludes graduate-level courses and research/tutorial/thesis listings."""
+        return cls.is_class(c) and not cls.is_grad_level(c)
 
     # ---------------------------------------------------------------- structured filters
     # Keys (all optional): term, subject, min_overall, max_workload, min_recommend, gen_ed, divisional, qrd,
@@ -314,7 +320,7 @@ class CourseDB:
         f = f or {}
         cat = c.get("catalog") or {}
         o = self._q(c)
-        if not f.get("include_grad") and not self.is_undergrad_class(c):
+        if not self.is_class(c) or (not f.get("include_grad") and self.is_grad_level(c)):
             return False
         term = f.get("term")
         if term and not any(x["term"] == term for x in cat.get("offered", [])):
@@ -580,6 +586,7 @@ class CourseDB:
             "gen_ed": cat.get("gen_ed"),
             "syllabus_url": cat.get("syllabus_url"),
             "has_q": bool(c["offerings"]),
+            "grad_level": self.is_grad_level(c),
             "instructor_score": o.get("instructor_score"),
             "effective_lectures": o.get("effective_lectures"),
             **{field: o.get(field) for field, *_ in EXTRA_Q_SCORES},

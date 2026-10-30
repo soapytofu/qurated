@@ -91,7 +91,7 @@ function cardHTML(c) {
   return `
     <article class="card" data-code="${esc(c.code)}" tabindex="0">
       <button class="fav${on}" aria-label="Favorite ${esc(c.code)}" aria-pressed="${!!on}">${ICON_HEART}</button>
-      <div class="code">${esc(c.code)}${c.gen_ed ? ` <span class="gened">${esc(c.gen_ed)}</span>` : ""}</div>
+      <div class="code">${esc(c.code)}${c.gen_ed ? ` <span class="gened">${esc(c.gen_ed)}</span>` : ""}${c.grad_level ? ' <span class="gened grad" title="Graduate-level: may need instructor permission">Graduate</span>' : ""}</div>
       <h3>${esc(c.title)}</h3>
       ${c.next_offered ? `<div class="meets">${ICON_CAL}${esc(c.next_offered)}</div>` : ""}
       ${tagsHTML(c.tags)}
@@ -303,6 +303,15 @@ async function send(message) {
           bindCards(wrap, ev.cards);
           progress.step("Writing advice");
           textEl = null;
+        } else if (ev.type === "options" && ev.options.length) {
+          // Clarifying question: tappable answers.
+          const row = document.createElement("div");
+          row.className = "followups clarify";
+          row.innerHTML = ev.options.map((o) => `<button class="chip-btn">${esc(o)}</button>`).join("");
+          $$("button", row).forEach((b) => b.addEventListener("click", () => send(b.textContent)));
+          bot.insertBefore(row, status);
+        } else if (ev.type === "memory" && ev.facts.length) {
+          addMemoryNote(bot, status, ev.facts);
         } else if (ev.type === "usage") {
           note("usage", `${ev.searched ? "Searched courses" : "Answered directly"} · ${progress.seconds()}s`);
         } else if (ev.type === "done") {
@@ -323,6 +332,22 @@ async function send(message) {
     $("#input").focus();
     refreshMe();
   }
+}
+
+// Facts the student mentioned mid-chat: remembered for this chat, with an option to keep them in preferences.
+function addMemoryNote(bot, before, facts) {
+  const el = document.createElement("div");
+  el.className = "memory-note";
+  el.innerHTML = `<span>Noted for this chat: ${facts.map(esc).join(" · ")}</span> <button class="linkbtn">Save to my preferences</button>`;
+  $("button", el).addEventListener("click", (e) => {
+    const notes = (prefs.notes || "").split("\n").filter(Boolean);
+    facts.forEach((f) => { if (!notes.includes(f)) notes.push(f); });
+    prefs.notes = notes.join("\n").slice(-600);
+    fillPrefs();
+    savePrefs();
+    e.target.replaceWith(Object.assign(document.createElement("span"), { className: "saved", textContent: "Saved ✓" }));
+  });
+  bot.insertBefore(el, before);
 }
 
 $("#composer").addEventListener("submit", (e) => { e.preventDefault(); send($("#input").value); });
@@ -730,7 +755,7 @@ function renderFilterControls() {
   $("#f-earliest").value = filters.earliest_start || "";
   $("#f-workload").value = filters.max_workload || 0;
   $("#f-wl-val").textContent = filters.max_workload ? `≤ ${filters.max_workload} hrs/wk` : "any";
-  ["qrd", "small_class", "has_reviews"].forEach((k) => ($(`#f-${k}`).checked = !!filters[k]));
+  ["qrd", "small_class", "has_reviews", "include_grad"].forEach((k) => ($(`#f-${k}`).checked = !!filters[k]));
   filterSummary();
 }
 let countTimer = null, countVersion = 0;
@@ -777,7 +802,7 @@ $$("#f-days button").forEach((b) => b.addEventListener("click", () => {
   $(id).addEventListener("change", (e) => { filters[k] = e.target.value; filtersChanged(); }));
 $("#f-earliest").addEventListener("change", (e) => { filters.earliest_start = e.target.value ? Number(e.target.value) : ""; filtersChanged(); });
 $("#f-workload").addEventListener("input", (e) => { filters.max_workload = Number(e.target.value) || ""; filtersChanged(); });
-["qrd", "small_class", "has_reviews"].forEach((k) => $(`#f-${k}`).addEventListener("change", (e) => { filters[k] = e.target.checked; filtersChanged(); }));
+["qrd", "small_class", "has_reviews", "include_grad"].forEach((k) => $(`#f-${k}`).addEventListener("change", (e) => { filters[k] = e.target.checked; filtersChanged(); }));
 $("#f-query").addEventListener("input", filtersChanged);
 $("#f-reset").addEventListener("click", () => { filters = {}; $("#f-query").value = ""; filtersChanged(); });
 
@@ -857,6 +882,7 @@ function describeFilters(state) {
   if (f.qrd) parts.push("QRD");
   if (f.small_class) parts.push("small classes");
   if (f.has_reviews) parts.push("has Q reviews");
+  if (f.include_grad) parts.push("incl. graduate courses");
   return (parts.length ? parts.join(" · ") : "All undergrad courses") + " · direct search, no AI";
 }
 $("#f-show").addEventListener("click", () => { showResults(); if (window.innerWidth < 1100) toggleFilters(false); });
@@ -882,17 +908,35 @@ $("#nav-favs").addEventListener("click", () => setActiveNav("nav-favs"));
 document.addEventListener("click", (e) => { if (e.target.closest("#composer") && !document.body.classList.contains("home")) setActiveNav(""); });
 
 // ---------- follow-up suggestions after an answer with cards ----------
-const FOLLOW_UPS = ["Which of these has the lightest workload?", "Compare the top two", "Show me more options like these"];
+const FOLLOW_UPS = ["Which of these has the lightest workload?", "Compare the top two"];
 function addFollowUps(turnEl) {
-  if (!turnEl.querySelector(".card") || turnEl.querySelector(".followups")) return;
+  if (!turnEl.querySelector(".card") || turnEl.querySelector(".followups:not(.clarify)")) return;
   const row = document.createElement("div");
   row.className = "followups";
-  row.innerHTML = '<span>Try next:</span>' + FOLLOW_UPS.map((q) => `<button class="chip-btn">${esc(q)}</button>`).join("") +
+  row.innerHTML = '<span>Try next:</span><button class="chip-btn" data-more="1">Show more like these</button>' +
+    FOLLOW_UPS.map((q) => `<button class="chip-btn">${esc(q)}</button>`).join("") +
     '<button class="chip-btn ghost" data-browse="1">Browse with filters ›</button>';
   $$("button", row).forEach((b) => b.addEventListener("click", () => {
-    if (b.dataset.browse) { toggleFilters(true); setActiveNav("nav-browse"); } else send(b.textContent);
+    if (b.dataset.browse) { toggleFilters(true); setActiveNav("nav-browse"); }
+    else if (b.dataset.more) showMore(turnEl, b);
+    else send(b.textContent);
   }));
   turnEl.appendChild(row);
+}
+// Next matches for the same search, straight from the index: instant and no AI cost.
+async function showMore(turnEl, btn) {
+  btn.disabled = true;
+  btn.textContent = "Loading…";
+  const r = await api("/api/more", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId }) }).then((x) => (x.ok ? x.json() : null)).catch(() => null);
+  const grid = $(".cards", turnEl);
+  if (!r?.cards?.length || !grid) { btn.textContent = "No more matches"; return; }
+  const tmp = document.createElement("div");
+  tmp.innerHTML = r.cards.map(cardHTML).join("");
+  bindCards(tmp, r.cards);
+  [...tmp.children].forEach((el) => grid.appendChild(el));
+  btn.disabled = false;
+  btn.textContent = "Show more like these";
 }
 new MutationObserver(() => {
   if (busy) return;

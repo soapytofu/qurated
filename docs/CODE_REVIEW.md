@@ -36,7 +36,8 @@ P3 means maintainability. None of these findings establishes that an exploit or 
 - During generation: trusted system instructions distinguish user/retrieved data from instructions,
   limit the assistant to course/academic help, reject cheating or attempts to identify reviewers, avoid
   guarantees and secret disclosure, and give a brief supportive response to immediate-danger requests.
-- Before display: require complete JSON and normal completion, at most three picks, nonempty bounded
+- Before display: require complete JSON and normal completion, at most three picks (six since Oct 30; each card
+  is now released once its own pick passes the same checks, advice only after the full answer), nonempty bounded
   advice/reasons, retrieved course codes, exclusion of taken courses, cross-list deduplication and
   verified short quotations. Reject detected sensitive identifiers in the output.
 - Request lifecycle: bounded producer queue, a 60-second answer deadline and cancellation signals to

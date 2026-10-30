@@ -33,7 +33,7 @@ def test_sensitive_data_detection():
 ])
 def test_no_generated_content_leaks_before_validation(monkeypatch, reply, stop, accepted):
     def stream(client, kwargs):
-        assert 'untrusted data' in kwargs['system']
+        assert 'untrusted data' in ''.join(b['text'] for b in kwargs['system'])
         assert 'system' not in json.loads(kwargs['messages'][-1]['content'])
         for char in reply:
             yield 'text', char

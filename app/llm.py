@@ -56,7 +56,10 @@ class OpenAIChat:
         model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
         if router:
             model = os.getenv("OPENAI_ROUTER_MODEL") or model
-        return dict(model=model, instructions=kwargs["system"],
+        system = kwargs["system"]
+        if isinstance(system, list):  # Anthropic cache blocks
+            system = "\n".join(block["text"] for block in system)
+        return dict(model=model, instructions=system,
                     input=kwargs["messages"], store=False,
                     max_output_tokens=max(256, kwargs["max_tokens"]),
                     text={"format": {"type": "json_schema", "name": "course_response",

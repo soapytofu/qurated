@@ -216,6 +216,34 @@ def run_agentic(message):
             "t_first": t_cards or total}
 
 
+def run_production(message):
+    """The live path: guard -> router -> pipeline.stream_answer, exactly as /api/chat runs it."""
+    import pipeline
+    costs = []
+    orig = pipeline.stream_answer
+
+    def wrapped(*a, **k):
+        res = yield from orig(*a, **k)
+        costs.append(res[0])
+        return res
+    pipeline.stream_answer = wrapped
+    t0 = time.perf_counter(); t_first = None; picks = []; text = ""
+    try:
+        for ev in server.fast_chat_stream(("bench@test", f"{message}-{time.time()}"), message, {}, [], [], {}):
+            e = json.loads(ev[6:])
+            if e["type"] == "card":
+                t_first = t_first or time.perf_counter() - t0
+                c = e["card"]
+                picks.append({"code": c["code"], "reason": c.get("reason", ""), "quote": c.get("quote") or ""})
+            elif e["type"] == "text":
+                text += e["delta"]
+    finally:
+        pipeline.stream_answer = orig
+    total = time.perf_counter() - t0
+    return {"picks": picks, "advice": text, "cost": sum(costs), "t_total": total, "t_cards": total,
+            "t_first": t_first or total}
+
+
 VARIANTS = {
     "V0 agentic (current)": lambda m: run_agentic(m),
     "V1 Haiku plan + Sonnet answer": lambda m: run_single_shot(m, True),
@@ -227,6 +255,7 @@ VARIANTS = {
     "V7 V2 + GenEd filter + concise": lambda m: run_single_shot(m, True, thinking={"type": "between_tools"}, concise=True),
     "V8 V7 without planner": lambda m: run_single_shot(m, False, thinking={"type": "between_tools"}, concise=True),
     "V9 V8 + lean context": lambda m: run_single_shot(m, False, lean=True, thinking={"type": "between_tools"}, concise=True),
+    "V10 production (6 cards, memory, guardrails, cache)": run_production,
 }
 
 

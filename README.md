@@ -5,7 +5,8 @@
 Its answers draw on what past students said in their **Q reports** and on the **my.harvard catalog**.
 
 - 🎓 **Grounded answers:** ratings, weekly workload and real student quotes from Q reports, plus terms offered, meeting times, Gen Ed / Divisional Distribution / QRD, descriptions and syllabus links from my.harvard. Every quote is checked word-for-word against the source.
-- 🛡️ **Validated responses:** progress appears immediately; complete answers are checked before cards or advice are displayed.
+- 🛡️ **Validated responses:** progress appears immediately; each course card is checked before it appears, and advice is shown only after the complete answer passes. Obvious jailbreak and homework requests are refused in code, with no AI call.
+- 💬 **Conversational:** up to 6 picks per answer, plus a free "Show more like these" button. Qurated asks one clarifying question when a request is too vague, and remembers facts the student mentions ("junior in CS") for the rest of the chat.
 - 🏷️ **Course tags:** each course is tagged with what students consistently say about it (e.g. "engaging lectures", "heavy reading").
 - ❤️ **Student accounts:** favorites, preferences and courses already taken are saved per student, and courses they've taken are never recommended.
 - 🔒 **Harvard-only:** sign-in requires a verified `@college.harvard.edu` Google account.
@@ -28,7 +29,7 @@ Its answers draw on what past students said in their **Q reports** and on the **
  (public pages)                            │  in-memory  │  1. pre-check: does this need a course search?
  Claude Haiku ─tag_courses.py► tags.json ──┘  BM25 index │  2. retrieval: filters + keyword search (~2 ms)
    (Batches API)                                          │  3. ONE Claude Sonnet call → structured JSON
- SQLite: favorites / courses taken / prefs ◄──────────────┤  4. validate the complete answer, then send cards + advice
+ SQLite: favorites / courses taken / prefs ◄──────────────┤  4. send each validated card, then advice
 ```
 
 1. **Scrape (offline).**
@@ -39,9 +40,9 @@ Its answers draw on what past students said in their **Q reports** and on the **
 3. **Index.** `app/courses.py` merges Q reports, catalog and tags into one record per course. A weighted BM25 keyword index covers titles, descriptions, Gen Eds, section topics, tags and comments, with filters for term, workload, Gen Ed, undergrad level and courses already taken.
 4. **Answer (`app/pipeline.py`).**
    - A quick pre-check (a regex, or Claude Haiku) skips searching for questions like "what's a Gen Ed?".
-   - The server picks the top 8 candidate courses itself, with no LLM involved.
-   - It then makes **one** Claude Sonnet 5.5 call, with thinking off and a JSON-schema output, that returns `{picks, advice}`.
-   - The server buffers the structured response, checks its shape and course allowlist, verifies quotes, and then sends cards and advice. Refused or incomplete responses are not displayed.
+   - The server picks the top 10 candidate courses itself, with no LLM involved. When undergraduate matches run thin, graduate courses fill the remaining slots and are labeled Graduate.
+   - It then makes **one** Claude Sonnet 5.5 call, with thinking off and a JSON-schema output, that returns `{picks, advice, options, remember}`. The fixed instructions are prompt-cached.
+   - As the response streams, each pick that passes the per-pick checks (course allowlist, taken courses, verified quote) is sent as a card. Advice, clarifying options and remembered facts are sent only after the complete response passes validation. Refused or incomplete responses show a generic error instead.
    - Follow-ups like "which of those is lightest?" reuse the courses already shown.
 
 ### Why one call instead of an agent loop
@@ -89,6 +90,8 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 | `SESSION_SECRET` | Signs login cookies | required |
 | `ALLOWED_EMAIL_DOMAINS` | Comma-separated domains allowed to sign in | `college.harvard.edu` |
 | `DAILY_QUESTION_LIMIT` | Questions per student per day | `40` |
+| `PER_MINUTE_QUESTION_LIMIT` | Questions per student per minute | `6` |
+| `DAILY_BUDGET_USD` | Total API spend per day; AI answers pause past it (Browse still works) | `20` |
 | `ADMIN_EMAILS` | Comma-separated admin emails | (none) |
 | `HTTPS_ONLY` | Set to `1` when served over HTTPS (secure cookies) | `0` |
 
