@@ -1,0 +1,17 @@
+[Unit]
+Description=Qurated (HUA course advisor)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=qurated
+WorkingDirectory=/opt/qurated/app
+# One worker: chat history, rate limits and the course index live in this process.
+ExecStart=/opt/qurated/.local/bin/uv run --frozen uvicorn server:app --host 127.0.0.1 --port 8765 --proxy-headers
+Restart=always
+RestartSec=3
+Environment=HOME=/opt/qurated
+Environment=UV_CACHE_DIR=/opt/qurated/.cache/uv
+
+[Install]
+WantedBy=multi-user.target

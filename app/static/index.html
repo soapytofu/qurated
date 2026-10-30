@@ -6,7 +6,7 @@
   <title>Qurated · HUA Course Advisor</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=18">
+  <link rel="stylesheet" href="/static/styles.css?v=19">
 </head>
 <body>
   <nav class="globalnav">
@@ -183,6 +183,7 @@
       <label><input type="checkbox" id="f-qrd"> QRD only</label>
       <label><input type="checkbox" id="f-small_class"> Small classes (cap ≤ 20)</label>
       <label><input type="checkbox" id="f-has_reviews"> Has Q reviews</label>
+      <label><input type="checkbox" id="f-include_grad"> Include graduate courses</label>
     </div>
     <button type="button" class="pill pill-fill full" id="f-show">Show courses</button>
     <p id="browse-status" class="hint" role="status" aria-live="polite"></p>
@@ -202,6 +203,7 @@
       <input type="range" name="max_workload_hrs" min="0" max="20" step="1" value="0"></label>
     <label>Teaching style I like<input name="style" placeholder="e.g. small seminars, project-based, no exams"></label>
     <label>Avoid<input name="avoid" placeholder="e.g. 9am classes, heavy problem sets"></label>
+    <label>Other things to remember about me<textarea name="notes" rows="3" placeholder="e.g. Already finished QRD&#10;Planning to study abroad junior spring"></textarea></label>
     <button type="button" class="pill pill-soft full" id="prefs-taken">Courses I've taken…</button>
     <p id="prefs-status" class="hint" role="status" aria-live="polite"></p>
     <button class="pill pill-fill full" id="prefs-save">Save preferences</button>
@@ -251,6 +253,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=18"></script>
+  <script src="/static/app.js?v=19"></script>
 </body>
 </html>

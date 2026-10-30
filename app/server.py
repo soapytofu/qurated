@@ -8,8 +8,8 @@ import re
 import time
 import threading
 import uuid
-from collections import defaultdict
-from datetime import date
+from collections import defaultdict, deque
+from datetime import date, datetime
 from pathlib import Path
 
 import anthropic
@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.sessions import SessionMiddleware
 
 import db as store
+import guard
 import pipeline
 import llm
 from guardrails import has_sensitive_text, PRIVACY_REPLY
@@ -47,6 +48,22 @@ GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 ALLOWED_DOMAINS = {d.strip().lower() for d in os.environ.get("ALLOWED_EMAIL_DOMAINS", "college.harvard.edu").split(",") if d.strip()}
 ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}  # see costs
 DAILY_LIMIT = int(os.environ.get("DAILY_QUESTION_LIMIT", "40"))  # per student, protects your API credit
+MINUTE_LIMIT = int(os.environ.get("PER_MINUTE_QUESTION_LIMIT", "6"))  # per student, stops rapid-fire spending
+DAILY_BUDGET = float(os.environ.get("DAILY_BUDGET_USD", "20"))  # all students: AI answers pause past this
+try:
+    from zoneinfo import ZoneInfo
+    CAMPUS_TZ = ZoneInfo("America/New_York")
+except Exception:  # no tz database: fall back to the server's clock
+    CAMPUS_TZ = None
+
+
+def today():
+    """Limits reset at midnight Boston time, whatever timezone the server runs in."""
+    return datetime.now(CAMPUS_TZ).date() if CAMPUS_TZ else date.today()
+
+
+recent_questions: dict[str, deque] = defaultdict(deque)  # email -> times of questions in the last minute
+_recent_lock = threading.Lock()
 chat_state = ChatState()
 _report_count = len(list(REPORTS_DIR.glob("*.json")))
 
@@ -420,9 +437,16 @@ def _fast_chat_stream(entry, message, preferences, favorites, taken, filters):
         yield sse({"type": "text", "delta": PRIVACY_REPLY})
         yield sse({"type": "done"})
         return
+    blocked = guard.screen(message)
+    if blocked:  # refused in code: no model call, no cost
+        print(f"[guard] blocked {blocked[0]} request", flush=True)
+        yield sse({"type": "text", "delta": blocked[1]})
+        yield sse({"type": "usage", "searched": False})
+        yield sse({"type": "done"})
+        return
     try:
         _maybe_reload()
-        yield from _run_fast_chat(history, prior, message, preferences, favorites, taken, filters)
+        yield from _run_fast_chat(history, prior, message, preferences, favorites, taken, filters, state=entry)
     except (anthropic.AuthenticationError, openai.AuthenticationError):
         yield sse({"type": "error", "text": "The AI provider rejected the API key. Check the selected provider and key in app/.env, then restart."})
     except (anthropic.RateLimitError, openai.RateLimitError):
@@ -433,19 +457,20 @@ def _fast_chat_stream(entry, message, preferences, favorites, taken, filters):
     yield sse({"type": "done"})
 
 
-def _run_fast_chat(history, prior, message, preferences, favorites, taken, filters):
+def _run_fast_chat(history, prior, message, preferences, favorites, taken, filters, state=None):
     key_name = "OPENAI_API_KEY" if PROVIDER == "openai" else "ANTHROPIC_API_KEY"
     if not os.getenv(key_name, "").strip():
         yield sse({"type": "error", "text": f"Add {key_name} to app/.env and restart the app."})
         return
-    if pipeline.is_follow_up(message, history):
-        search, router_cost = True, 0.0  # compare the courses we just showed
+    if pipeline.is_follow_up(message, history) or pipeline.just_asked(history):
+        search, router_cost = True, 0.0  # compare the courses we just showed, or answer our question
     else:
         search, router_cost = needs_q_data(message, prior)
     prior.append(message[:300])
     cost, secs = yield from pipeline.stream_answer(client, db, history, message, preferences, favorites,
                                                    list(taken), search, sse, db.card, _verified_quote,
-                                                   filters=filters)
+                                                   filters=filters, state=state)
+    store.add_spend(today(), cost + router_cost)
     cost_label = "cost unavailable (see OpenAI dashboard)" if PROVIDER == "openai" else f"≈ ${cost + router_cost:.4f}"
     print(f"[usage] provider={PROVIDER} search={search} {secs:.1f}s {cost_label}", flush=True)
     yield sse({"type": "usage", "searched": search})
@@ -509,9 +534,13 @@ def logout(request: Request):
 
 @app.get("/api/me")
 def me(user=Depends(current_user)):
-    used = store.questions_used(user["email"], date.today())
-    return {**user, "questions_left": max(DAILY_LIMIT - used, 0), "daily_limit": DAILY_LIMIT,
-            "is_admin": user["email"] in ADMIN_EMAILS}
+    used = store.questions_used(user["email"], today())
+    out = {**user, "questions_left": max(DAILY_LIMIT - used, 0), "daily_limit": DAILY_LIMIT,
+           "is_admin": user["email"] in ADMIN_EMAILS}
+    if out["is_admin"]:
+        usd, answers = store.spend(today())
+        out["spend_today"] = {"usd": round(usd, 2), "answers": answers, "budget_usd": DAILY_BUDGET}
+    return out
 
 
 # ---- Feedback ----
@@ -530,7 +559,7 @@ def feedback(body: Feedback, user=Depends(current_user)):
     text = body.message.strip()
     if not text:
         raise HTTPException(400, "Please write something first.")
-    key = (user["email"], date.today())
+    key = (user["email"], today())
     if feedback_today[key] >= 10:
         raise HTTPException(429, "Thanks! You've sent a lot of feedback today. Try again tomorrow.")
     feedback_today[key] += 1
@@ -599,7 +628,7 @@ def clean_filters(f):
             out["earliest_start"] = es
     except (TypeError, ValueError, OverflowError):
         pass
-    for k in ("qrd", "small_class", "has_reviews"):
+    for k in ("qrd", "small_class", "has_reviews", "include_grad"):
         if f.get(k) is True:
             out[k] = True
     return out
@@ -634,7 +663,20 @@ def chat(req: ChatRequest, user=Depends(current_user)):
     _maybe_reload()
     if not db.courses:
         raise HTTPException(503, "The course catalog has not been loaded yet. Course recommendations will be available after the catalog is imported.")
-    key = (user["email"], date.today())
+    key = (user["email"], today())
+    if store.spend(key[1])[0] >= DAILY_BUDGET:
+        raise HTTPException(429, "Qurated's AI answers are paused until tomorrow because of high demand. "
+                                 "Browse courses still works and has every course and review.")
+    with _recent_lock:
+        now = time.monotonic()
+        recent = recent_questions[user["email"]]
+        while recent and now - recent[0] > 60:
+            recent.popleft()
+        if len(recent) >= MINUTE_LIMIT:
+            wait = int(60 - (now - recent[0])) + 1
+            raise HTTPException(429, f"That's a lot of questions at once. Try again in {wait} seconds, or use "
+                                     "Browse courses, which has no limit.")
+        recent.append(now)
     if not store.reserve_question(*key, DAILY_LIMIT):
         raise HTTPException(429, f"You've hit today's limit of {DAILY_LIMIT} questions. Come back tomorrow!")
     sid = req.session_id or uuid.uuid4().hex
@@ -645,6 +687,24 @@ def chat(req: ChatRequest, user=Depends(current_user)):
     return StreamingResponse(fast_chat_stream((email, sid), req.message, prefs, favs, taken,
                                               clean_filters(req.filters)),
                              media_type="text/event-stream", headers={"X-Session-Id": sid})
+
+
+class MoreRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+@app.post("/api/more")
+def more(req: MoreRequest, user=Depends(current_user)):
+    """'Show more like these': next matches for the chat's last search, straight from the index (no AI cost)."""
+    key = (user["email"], req.session_id)
+    entry = chat_state.acquire(key)
+    if entry is None:
+        raise HTTPException(409, "This chat is busy. Please try again shortly.")
+    try:
+        codes = pipeline.more_like(db, entry, store.taken(user["email"]))
+    finally:
+        chat_state.release(key)
+    return {"cards": [c for c in map(db.card, codes) if c]}
 
 
 @app.get("/api/course/{code}")
@@ -675,13 +735,13 @@ def meta(user=Depends(current_user)):
 
 
 # ---- Saved account data ----
-PREF_KEYS = {"concentration", "year", "interests", "requirements", "max_workload_hrs", "style", "avoid"}
+PREF_KEYS = {"concentration", "year", "interests", "requirements", "max_workload_hrs", "style", "avoid", "notes"}
 
 
 def clean_preferences(prefs):
     """Normalize saved legacy values as well as new writes before they reach retrieval."""
     import math
-    clean = {k: v[:300] for k, v in prefs.items() if k in PREF_KEYS and
+    clean = {k: v[:600 if k == "notes" else 300] for k, v in prefs.items() if k in PREF_KEYS and
              k != "max_workload_hrs" and isinstance(v, str)}
     try:
         raw = prefs.get("max_workload_hrs", 0)

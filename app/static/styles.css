@@ -439,3 +439,11 @@ body:has(dialog[open]), body.overlay-open { overflow:hidden; }
 .search-plan p { margin: 8px 0 0; }
 
 .data-coverage { max-width: 760px; margin: 16px auto 0; color: var(--dark-text-2); font-size: 14px; line-height: 1.5; }
+
+/* Graduate-level pill, chat memory note, clarifying-question chips */
+.gened.grad { color: var(--crimson); }
+.memory-note { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; margin: 10px 0 2px; font-size: 13px; color: var(--text-2); }
+.memory-note .linkbtn { background: none; border: 0; padding: 0; font-size: 13px; color: var(--crimson); cursor: pointer; }
+.memory-note .linkbtn:hover { text-decoration: underline; }
+.memory-note .saved { color: var(--text-2); }
+.followups.clarify { margin-top: 10px; }
