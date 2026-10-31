@@ -565,11 +565,14 @@ function catalogHTML(cat) {
   const facts = [["Gen Ed", cat.gen_ed], ["Divisional", cat.divisional], ["QRD", cat.qrd], ["Level", cat.level],
     ["Format", cat.component], ["Grading", cat.grading], ["Consent", cat.consent], ["Cap", cat.enrollment_cap]]
     .filter(([, v]) => v != null && v !== "");
-  const offered = (cat.offered || []).map((o) => `
-    <div class="offer"><b>${esc(o.term)}</b>${o.sections.slice(0, 4).map((s) => {
+  const offered = (cat.offered || []).map((o) => {
+    const sections = o.sections.map((s) => {
       const meets = (s.meetings || []).filter((m) => m.days?.length && m.time).map((m) => `${m.days.join("/")} ${m.time}`).join("; ") || "Time TBA";
-      return `<div>${s.topic ? `<i>${esc(s.topic)}</i> · ` : ""}${esc(meets)} · ${esc((s.instructors || []).join(", ") || "Staff")}</div>`;
-    }).join("")}${o.sections.length > 4 ? `<div class="meta">+${o.sections.length - 4} more sections</div>` : ""}</div>`).join("");
+      return `<div>${s.section ? `${esc(s.section)} · ` : ""}${s.topic ? `<i>${esc(s.topic)}</i> · ` : ""}${esc(meets)} · ${esc((s.instructors || []).join(", ") || "Staff")}</div>`;
+    });
+    return `<div class="offer"><b>${esc(o.term)}</b>${sections.slice(0, 4).join("")}${sections.length > 4
+      ? `<details class="more-sections"><summary>Show ${sections.length - 4} more sections</summary>${sections.slice(4).join("")}</details>` : ""}</div>`;
+  }).join("");
   return `
     ${cat.description ? `<p class="desc">${esc(cat.description)}</p>` : ""}
     <div class="offers">${offered}</div>
