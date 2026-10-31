@@ -367,7 +367,6 @@ function syncWorkload() {
 
 // ---------- sheets ----------
 let activeOverlay = null, overlayReturn = null, inertElements = [];
-let overlayVersion = 0, feedbackCloseTimer = null;
 const focusable = (root) => $$('button:not([disabled]), input, select, textarea, a[href], [tabindex="0"]', root)
   .filter(el => !el.hidden && el.getClientRects().length);
 function openOverlay(id, scrim = false) {
@@ -693,6 +692,7 @@ api("/api/meta").then((r) => {
 });
 
 // ---------- feedback ----------
+let overlayVersion = 0, feedbackCloseTimer = null;
 const fbStatus = $("#fb-status");
 $("#open-feedback").addEventListener("click", () => {
   openOverlay("#feedback");
