@@ -15,6 +15,7 @@ import search_planner
 import search_constraints
 import conversation_context
 import review_constraints
+import reference_courses
 
 from courses import UPCOMING, GEN_EDS, EXTRA_Q_SCORES, tokenize
 from guardrails import MAX_PICKS, POLICY, SAFE_FAILURE, validate_answer, validate_pick
@@ -123,6 +124,16 @@ def _request_plan(db, message, preferences):
     """Extract deterministic constraints before optional semantic query expansion."""
     review = review_constraints.extract(message, db)
     message = review["message"]
+    reference = reference_courses.resolve(db, message, CODE_RE)
+    if reference:
+        # An exclusion/example is a discovery request, even when it names a course or
+        # follows a comparison. Resolve it before the broad referent matcher.
+        value = _request_plan(db, reference["message"], preferences)
+        value["review_filters"].update(review["filters"])
+        value["clarifications"] += review["clarifications"]
+        value["exclude"] = list(dict.fromkeys(value.get("exclude", []) + reference["exclude"]))
+        value["reference_codes"] = reference["exclude"]
+        return value
     extracted = search_constraints.extract(message)
     parts = [x for x in re.split(r"(?<=[.!?])\s+|\s*;\s*", extracted["query"]) if x.strip()]
     asks = [x for x in parts if not SELF_DESC.match(x)]
