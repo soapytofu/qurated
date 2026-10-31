@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 import pipeline
-from course_evidence import only_hypothetical_support
+from course_evidence import evidence_summary, only_hypothetical_support, supports_policies, validate_claims
 from guardrails import validate_answer, validate_pick
 from test_retrieval import database
 from test_cards_memory_limits import fake_stream
@@ -93,3 +93,123 @@ def test_no_picks_does_not_bypass_newness_validation():
     with pytest.raises(ValueError):
         validate_answer({'picks': [], 'advice': 'TEST 0 is new so no reviews are available.'},
                         [{'code': 'TEST 0'}], [], db, lambda *a: None)
+
+
+@pytest.mark.parametrize('text', [
+    'TEST 0 has no exams, but its workload is unknown.',
+    'TEST 0 has no exams and its workload is unknown.',
+    'TEST 0 is new, although its instructor is unknown.',
+    'TEST 0 has no exams, so check the current syllabus for details.',
+    'TEST 0 has no exams; I cannot confirm its workload.',
+    'I cannot confirm its workload, but TEST 0 has no exams.',
+])
+def test_unrelated_uncertainty_does_not_qualify_definite_claim(text):
+    with pytest.raises(ValueError):
+        validate_claims(text, [database().courses['TEST 0']])
+
+
+@pytest.mark.parametrize('text', [
+    "I can't confirm that TEST 0 has no exams.",
+    'Whether TEST 0 has no exams is unknown.',
+    'It is unknown whether TEST 0 has no exams.',
+    'I cannot confirm TEST 0 is new.',
+    'TEST 0 has a welcoming instructor.',
+    'No matching offering was found in the loaded catalog.',
+    'Here is a new option to consider.',
+])
+def test_specific_uncertainty_and_ordinary_sentences_remain_allowed(text):
+    validate_claims(text, [database().courses['TEST 0']])
+
+
+@pytest.mark.parametrize('policy,notes', [
+    ('no_exams', 'No exams may be missed; two midterms and a final are required.'),
+    ('no_exams', 'No exams may be missed.'),
+    ('no_exams', 'This course is not exam-free.'),
+    ('no_exams', 'It is not true that there are no exams.'),
+    ('no_exams', 'Students reported no exams in 2020; this year there is a final exam.'),
+    ('no_exams', 'No exams. A final exam is required.'),
+    ('optional_attendance', 'Attendance is optional for lectures but mandatory for sections.'),
+    ('optional_attendance', 'Attendance is optional for lectures.'),
+    ('optional_attendance', 'It is not true that attendance is optional.'),
+])
+def test_catalog_fragments_do_not_establish_unconditional_policies(policy, notes):
+    c = database().courses['TEST 0']
+    c['catalog']['class_notes'] = notes
+    assert not supports_policies(c, [policy])
+    assert policy not in evidence_summary(c)['current_policies_confirmed']
+    with pytest.raises(ValueError):
+        validate_claims('TEST 0 has no exams.' if policy == 'no_exams' else
+                        'TEST 0 has no mandatory attendance.', [c])
+
+
+@pytest.mark.parametrize('policy,notes', [
+    ('no_exams', 'There are no exams in this course.'),
+    ('no_exams', 'No exams. Attendance is optional.'),
+    ('no_exams', 'This course is exam-free.'),
+    ('optional_attendance', 'No exams. Attendance is optional.'),
+    ('optional_attendance', 'Attendance is not mandatory.'),
+    ('optional_attendance', 'There is no mandatory attendance.'),
+])
+def test_explicit_catalog_policies_remain_supported(policy, notes):
+    c = database().courses['TEST 0']
+    c['catalog']['class_notes'] = notes
+    assert supports_policies(c, [policy])
+
+
+@pytest.mark.parametrize('code', ['TEST 10', 'TEST10', 'test 10'])
+def test_course_claim_targets_have_exact_code_boundaries(code):
+    db = database()
+    db.courses['TEST 10']['catalog']['class_notes'] = 'No exams.'
+    candidates = [db.courses['TEST 1'], db.courses['TEST 10']]
+    validate_claims(f'{code} has no exams.', candidates)
+    with pytest.raises(ValueError):
+        validate_claims('TEST 1 has no exams.', candidates)
+
+
+def test_each_clause_keeps_its_course_and_policy_scope():
+    db = database()
+    db.courses['TEST 10']['catalog']['class_notes'] = 'No exams. Attendance is optional.'
+    validate_claims('TEST 10 has no exams and attendance is optional; TEST 1 has unknown policies.',
+                    [db.courses['TEST 1'], db.courses['TEST 10']])
+
+
+@pytest.mark.parametrize('terms,allowed', [
+    (['2023 Fall'], False), ([], False), (['2026 Spring'], True),
+    (['2023 Fall', '2026 Spring'], True), (None, True),
+])
+def test_historical_claims_use_selected_candidate_report_terms(terms, allowed):
+    db = database()
+    db.courses['TEST 0']['comments'] = [
+        {'term': '2023 Fall', 'text': 'Attendance is mandatory.'},
+        {'term': '2026 Spring', 'text': 'Attendance is optional.'},
+    ]
+    candidate = {'code': 'TEST 0', **({'q_terms': terms} if terms is not None else {})}
+    claim = 'Past students reported attendance is optional.'
+    pick = {'code': 'TEST 0', 'reason': claim, 'quote': ''}
+    for check in (
+        lambda: validate_pick(pick, {'TEST 0'}, [], db, lambda *a: None, [candidate]),
+        lambda: validate_answer({'picks': [pick], 'advice': 'Compare these options.'}, [candidate], [], db, lambda *a: None),
+        lambda: validate_answer({'picks': [], 'advice': claim}, [candidate], [], db, lambda *a: None),
+    ):
+        if allowed:
+            check()
+        else:
+            with pytest.raises(ValueError):
+                check()
+
+
+def test_early_card_cannot_use_historical_policy_outside_candidate_scope(monkeypatch):
+    db = database()
+    db.courses['TEST 0']['comments'] = [
+        {'term': '2023 Fall', 'text': 'Attendance is mandatory.'},
+        {'term': '2026 Spring', 'text': 'Attendance is optional.'},
+    ]
+    monkeypatch.setattr(pipeline, 'retrieve', lambda *a, **kw: [
+        {'code': 'TEST 0', 'q_terms': ['2023 Fall'], 'student_comments': ['Attendance is mandatory.']}])
+    reply = json.dumps({'picks': [{'code': 'TEST 0',
+        'reason': 'Past students reported attendance is optional.', 'quote': ''}], 'advice': 'Compare it.'})
+    monkeypatch.setattr(pipeline, 'hedged_stream', fake_stream(reply))
+    events = list(pipeline.stream_answer(SimpleNamespace(with_options=lambda **kw: None), db, [],
+        'Tell me about TEST 0', {}, [], [], True, lambda x: x, db.card, lambda *a: None))
+    assert not any(e['type'] == 'card' for e in events)
+    assert any(e['type'] == 'error' for e in events)

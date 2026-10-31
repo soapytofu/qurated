@@ -89,8 +89,8 @@ tied to this student's preferences, and may include one short quote copied exact
 - After the cards, add a few sentences of advice: tradeoffs between the picks, and anything worth checking.
 - Students are usually planning Spring 2027. Prefer courses offered in an upcoming term, mention when and how \
 often they meet, and say clearly if a course isn't in the Fall 2026 / Spring 2027 catalog.
-- Some courses are new or haven't been reviewed (no_q_data); describe them from the catalog and say there are \
-no Q reviews yet. Q ratings describe past offerings, and the instructor may have changed.
+- For courses with no_q_data, describe them from the catalog and say no Q reviews are available in the loaded \
+data. Missing reviews do not establish newness; confirm that from the catalog. Q ratings describe past offerings, and the instructor may have changed.
 - Use the catalog's Gen Ed / Divisional Distribution / QRD fields for requirement questions; don't guess them.
 - Students are undergraduates: skip courses whose level is "Primarily for Graduate Students" unless asked, \
 and skip independent study, thesis and dissertation listings.

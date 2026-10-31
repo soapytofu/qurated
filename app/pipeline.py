@@ -526,7 +526,7 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
                     continue
                 try:
                     code, reason, quote = (json.loads(f'"{g}"') for g in m.groups())
-                    pick = validate_pick(dict(code=code, reason=reason, quote=quote), allowed, taken, db, verify_quote)
+                    pick = validate_pick(dict(code=code, reason=reason, quote=quote), allowed, taken, db, verify_quote, cands)
                 except ValueError:
                     continue  # the full validation below rejects the answer
                 keys = db.identity_keys(pick["code"])
