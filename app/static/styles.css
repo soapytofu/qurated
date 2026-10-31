@@ -223,6 +223,9 @@ main { max-width: 1024px; margin: 0 auto; padding: 0 22px 170px; }
 .modal-card .meta { color: var(--text-2); margin: 0 0 18px; }
 .modal-card .tags { margin-bottom: 26px; }
 .modal-card .tag { background: var(--light); }
+.q-history-scroll { max-width: 100%; overflow-x: auto; margin-bottom: 30px; }
+.q-history-scroll .offerings { min-width: 660px; margin-bottom: 0; }
+.q-history-scroll:focus-visible { outline: 2px solid var(--crimson); outline-offset: 3px; }
 .offerings { width: 100%; border-collapse: collapse; font-size: 15px; margin-bottom: 30px; }
 .offerings th { text-align: left; font-size: 12px; color: var(--text-2); font-weight: 600; padding: 8px 6px; border-bottom: 1px solid var(--line); }
 .offerings td { padding: 11px 6px; border-bottom: 1px solid var(--line-soft); }

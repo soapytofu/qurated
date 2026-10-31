@@ -613,14 +613,16 @@ async function openDetail(code) {
     </div>
     ${tagsHTML(c.tags)}
     ${catalogHTML(c.catalog)}
-    ${c.offerings.length ? `<h3 class="sub">Q report history</h3>` : '<p class="no-q">No Q Guide reviews available in the loaded data</p>'}
-    <table class="offerings"${c.offerings.length ? "" : " hidden"}>
+    ${c.offerings.length ? `<h3 class="sub" id="q-history-title">Q report history</h3><p class="hint q-history-hint">Scroll across the table to see every metric.</p>` : '<p class="no-q">No Q Guide reviews available in the loaded data</p>'}
+    <div class="q-history-scroll" role="region" aria-labelledby="q-history-title" tabindex="0"${c.offerings.length ? "" : " hidden"}>
+    <table class="offerings">
       <thead><tr><th>Term</th><th>Instructor</th><th>Overall</th><th>Hrs/wk</th><th>Recommend</th><th>Instructor rating</th><th>Effective lectures</th><th>Responses</th></tr></thead>
       <tbody>${c.offerings.map((o) => `
         <tr><td>${esc(o.term)}</td><td>${esc(o.instructors.join(", "))}</td><td>${fmt(o.course_overall, 2)}</td>
         <td>${fmt(o.workload_hrs_mean)}</td><td>${fmt(o.recommend_mean, 2)}</td><td>${fmt(o.instructor_score, 2)}</td><td>${fmt(o.effective_lectures, 2)}</td><td>${fmt(o.responded, 0)}/${fmt(o.invited, 0)}</td></tr>`).join("")}
       </tbody>
     </table>
+    </div>
     ${c.offerings.length ? `<details><summary>More Q scores · ${esc(c.offerings[0].term)}</summary><p class="hint">Latest loaded report, out of 5. Instructor scores average that report’s instructors; current instructors may differ. — means unavailable.</p><table class="offerings"><tbody>${extraQScores.map(([field, label]) => `<tr><th>${esc(label)}</th><td>${fmt(c.offerings[0][field], 2)}</td></tr>`).join("")}</tbody></table></details>` : ""}
     <div class="comments">
       <h3>What students said <span class="meta">(${c.total_comments})</span></h3>
