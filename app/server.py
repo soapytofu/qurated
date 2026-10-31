@@ -444,6 +444,12 @@ def _fast_chat_stream(entry, message, preferences, favorites, taken, filters):
         yield sse({"type": "usage", "searched": False})
         yield sse({"type": "done"})
         return
+    from accessibility_evidence import physical_access_reply
+    if reply := physical_access_reply(message):
+        yield sse({"type": "text", "delta": reply})
+        yield sse({"type": "usage", "searched": False})
+        yield sse({"type": "done"})
+        return
     try:
         _maybe_reload()
         yield from _run_fast_chat(history, prior, message, preferences, favorites, taken, filters, state=entry)

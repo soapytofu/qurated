@@ -13,6 +13,7 @@ from itertools import zip_longest
 import guard
 import search_planner
 import search_constraints
+from accessibility_evidence import label_instructor_availability
 
 from courses import UPCOMING, GEN_EDS, EXTRA_Q_SCORES, tokenize
 from guardrails import MAX_PICKS, POLICY, SAFE_FAILURE, validate_answer, validate_pick
@@ -564,7 +565,7 @@ def _for_model(cands, message, filters):
     """Candidates as the model sees them; the cards the student sees keep every field."""
     keep_scores = SCORE_WORDS.search(message) or any("min_" + f in (filters or {}) for f, *_ in EXTRA_Q_SCORES)
     drop = {"latest_term"} | (set() if keep_scores else {f for f, *_ in EXTRA_Q_SCORES})
-    return [{k: v for k, v in c.items() if k not in drop} for c in cands]
+    return [label_instructor_availability({k: v for k, v in c.items() if k not in drop}) for c in cands]
 
 
 def more_like(db, state, taken, n=6):
