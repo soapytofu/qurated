@@ -13,6 +13,8 @@ from itertools import zip_longest
 import guard
 import search_planner
 import search_constraints
+import conversation_context
+import review_constraints
 
 from courses import UPCOMING, GEN_EDS, EXTRA_Q_SCORES, tokenize
 from guardrails import MAX_PICKS, POLICY, SAFE_FAILURE, validate_answer, validate_pick
@@ -101,24 +103,26 @@ def previous_picks(history):
     for turn in reversed(history):
         if turn["role"] == "assistant":
             m = POOL.search(turn["content"]) or RECOMMENDED.search(turn["content"])
-            return [c.strip() for c in m.group(1).split(",")] if m else []
+            if m:
+                return [c.strip() for c in m.group(1).split(",")]
     return []
 
 
-def is_follow_up(message, history):
-    return bool(previous_picks(history)) and bool(REFERENT.search(message) or MORE_OPTIONS.search(message))
+def is_follow_up(message, history, state=None):
+    return (conversation_context.context_search(message, state) or
+            bool(previous_picks(history)) and bool(REFERENT.search(message) or MORE_OPTIONS.search(message)))
 
 
-def just_asked(history):
+def just_asked(history, state=None):
     """True if our last turn was a clarifying question (so this message answers it)."""
-    return bool(history) and history[-1]["role"] == "assistant" and ASKED in history[-1]["content"]
+    pending = ((state or {}).get("course_context") or {}).get("pending") or {}
+    return pending.get("kind") == "question" or (bool(history) and history[-1]["role"] == "assistant" and ASKED in history[-1]["content"])
 
 
-def plan(db, message, preferences, history=()):
+def _request_plan(db, message, preferences):
     """Extract deterministic constraints before optional semantic query expansion."""
-    if just_asked(history) and len(history) >= 2:
-        # "STEM" only makes sense with the question it answers: search on both.
-        message = history[-2]["content"] + " " + message
+    review = review_constraints.extract(message, db)
+    message = review["message"]
     extracted = search_constraints.extract(message)
     parts = [x for x in re.split(r"(?<=[.!?])\s+|\s*;\s*", extracted["query"]) if x.strip()]
     asks = [x for x in parts if not SELF_DESC.match(x)]
@@ -127,45 +131,9 @@ def plan(db, message, preferences, history=()):
 
     def finish(value):
         return {**value, "numeric_filters": extracted["filters"], "term": extracted["term"],
-                "clarifications": extracted["clarifications"]}
+                "review_filters": review["filters"],
+                "clarifications": extracted["clarifications"] + review["clarifications"]}
 
-    if is_follow_up(message, history) and MORE_OPTIONS.search(message):
-        previous = previous_picks(history)
-        # Preserve the latest substantive search rather than searching the words "more options".
-        baseline = None
-        for index in range(len(history) - 1, -1, -1):
-            turn = history[index]
-            if turn["role"] != "user":
-                continue
-            if MORE_OPTIONS.search(turn["content"]) and not previous_picks(history[:index]):
-                continue  # The original request has expired; fall back to known course titles.
-            candidate = plan(db, turn["content"], preferences, history[:index])
-            if candidate["queries"] and not candidate["codes"]:
-                baseline = candidate
-                break
-        if baseline is None:
-            titles = [(db.lookup(code) or {}).get("title", "") for code in previous]
-            baseline = {"queries": [" ".join(titles)], "codes": [], "term": "any", "gen_ed": False,
-                        "max_workload": (preferences or {}).get("max_workload_hrs") or 0}
-        shown = []
-        for turn in history:
-            if turn["role"] == "assistant":
-                for match in RECOMMENDED.finditer(turn["content"]):
-                    shown.extend(code.strip() for code in match.group(1).split(","))
-        value = finish({**baseline, "codes": [], "exclude": list(dict.fromkeys(shown + previous))})
-        value["term"] = extracted["term"] if extracted["term"] != "any" else baseline["term"]
-        value["numeric_filters"] = {**baseline.get("numeric_filters", {}), **extracted["filters"]}
-        if any(key in extracted["filters"] for key in ("max_workload", "workload_under")):
-            value["max_workload"] = (preferences or {}).get("max_workload_hrs") or 0
-            value["light_workload"] = False
-            # The new explicit bound replaces the prior conversational bound.
-            for key in ("max_workload", "workload_under"):
-                if key not in extracted["filters"]:
-                    value["numeric_filters"].pop(key, None)
-        return value
-    if is_follow_up(message, history):
-        # "Which of those...": answer over the courses we just recommended, no new search.
-        return finish({"queries": [], "codes": previous_picks(history)[:6], "max_workload": 0, "term": "any", "gen_ed": False})
     m = message.lower()
     normalized = re.sub(r"[^a-z0-9]+", " ", m.replace("&", "and")).strip()
     category = next((name for name in GEN_EDS if
@@ -210,6 +178,18 @@ def plan(db, message, preferences, history=()):
             "light_workload": bool(light), "grad": bool(GRAD.search(m))}))
 
 
+def plan(db, message, preferences, history=(), state=None):
+    """Resolve references and amendments over durable structured search state."""
+    parse = lambda request: _request_plan(db, request, preferences)
+    if state is not None:
+        if 'course_context' not in state:
+            state['course_context'] = conversation_context.from_history(history, parse, db)
+        context = state['course_context']
+    else:
+        context = conversation_context.from_history(history, parse, db)
+    return conversation_context.resolve(message, context, parse)
+
+
 def describe_filters(f):
     if not f:
         return ""
@@ -219,7 +199,7 @@ def describe_filters(f):
              "any_gen_ed": "any Gen Ed", "gen_ed": "Gen Ed", "divisional": "divisional", "qrd": "QRD",
              "avoid_days": "no classes on", "earliest_start": "no class before (minutes after midnight)",
              "small_class": "small class (cap ≤ 20)", "has_reviews": "has Q reviews", "grading": "grading",
-             "format": "format", "include_grad": "graduate courses allowed"}
+             "format": "format", "include_grad": "graduate courses allowed", "q_term": "Q-report term"}
     names.update({"min_" + field: label.lower() + " ≥" for field, label, *_ in EXTRA_Q_SCORES})
     parts = []
     for key, value in f.items():
@@ -244,6 +224,15 @@ def effective_filters(p, selected=None):
     """Intersect all requested constraints. Return conflicts instead of choosing a winner."""
     filters = dict(selected or {})
     conflicts = list(p.get("clarifications", []))
+    if "q_term" in p.get("review_filters", {}):
+        q_term = p["review_filters"]["q_term"]
+        if filters.get("q_term") and filters["q_term"] != q_term:
+            conflicts.append(f'Your question asks for Q reports from {q_term or "all terms"}, '
+                             f'but Filters selects {filters["q_term"]}. Change your question or the selected filter so they agree.')
+        elif q_term:
+            filters["q_term"] = q_term
+        else:
+            filters.pop("q_term", None)
     for key, value in (("subject", p.get("subject")), ("gen_ed", p.get("gen_ed_category")),
                        ("term", p.get("term") if p.get("term") in UPCOMING else None)):
         if not value:
@@ -450,20 +439,29 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
         if not db.courses:
             yield sse({"type": "error", "text": "The course catalog has not been loaded yet. Course recommendations will be available after the catalog is imported."})
             return 0.0, time.perf_counter() - t0
-        p = plan(db, message, preferences, history)
+        p = plan(db, message, preferences, history, state=state)
+        if filters is None:
+            filters = ((state.get('course_context') or {}).get('search') or {}).get('selected_filters', {})
+        selected_filters = dict(filters or {})
         # Ask at most one clarifying question in a row, and never when the student was specific.
-        may_ask = not just_asked(history) and not p["codes"] and not filters and not is_follow_up(message, history)
+        may_ask = not just_asked(history, state) and not p["codes"] and not filters and not is_follow_up(message, history, state)
         filters, conflicts = effective_filters(p, filters)
+        conversation_context.remember_attempt(state, p, filters, message, db, selected_filters)
         if conflicts:
+            conversation_context.pending_result(state, "clarification")
             yield sse({"type": "text", "delta": " ".join(conflicts)})
             return 0.0, time.perf_counter() - t0
         if p.get("code_suggestions"):
+            conversation_context.pending_result(state, "code")
             questions = [f"For {raw}, did you mean {' or '.join(options)}?"
                          for raw, options in p["code_suggestions"].items()]
             yield sse({"type": "text", "delta": " ".join(questions)})
             return 0.0, time.perf_counter() - t0
         yield sse({"type": "status", "text": "Understanding your course request"})
         p = search_planner.expand(client, p, message, history)
+        if p.get('_intent') != 'compare':
+            state['course_context']['search']['plan'] = conversation_context.clean_plan(p)
+            state['last']['plan'] = conversation_context.clean_plan(p)
         planner_cost = p.get("planner_cost", 0.0)
         yield sse({"type": "search_plan", "queries": [q for q in p["queries"] if q],
                    "criteria": describe_filters(filters) or "No additional filters",
@@ -475,6 +473,7 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
         print(f"[retrieval] loaded={len(db.courses)} candidates={len(cands)} "
               f"category={p.get('gen_ed_category') or 'any'}", flush=True)
         if not cands:
+            conversation_context.pending_result(state, "no_results")
             yield sse({"type": "text", "delta": "I couldn't find matching courses in the loaded catalog. Try changing your filters or search terms; this does not mean no such courses exist."})
             return planner_cost, time.perf_counter() - t0
     yield sse({"type": "status", "text": "Preparing a grounded answer"})
@@ -482,7 +481,8 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
     facts = state.get("facts")
     context = context_line(preferences, favorites, taken, facts)
     content = json.dumps({"request": message, "student_context": context,
-                          "active_filters": filters or {}, "candidates": _for_model(cands, message, filters)},
+                          "active_filters": filters or {}, "candidates": _for_model(cands, message, filters),
+                          "course_discussion": ((state.get("course_context") or {}).get("discussion") or {}).get("codes", [])},
                          separators=(",", ":"))
     notes = []
     if may_ask and not set(tokenize(" ".join(p["queries"]))) - GENERIC and not (facts or preferences):
@@ -550,7 +550,7 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
     if added:
         yield sse({"type": "memory", "facts": added})
     if p:
-        state["last"] = {"plan": p, "filters": filters or {}, "shown": list(shown)}
+        conversation_context.remember_result(state, p, cands, shown, filters or {}, options)
     summary = advice + ("\n(Recommended: " + ", ".join(shown) + ")" if shown else "")
     if options:
         summary += f"\n{ASKED}: {' / '.join(options)}"
@@ -570,11 +570,21 @@ def _for_model(cands, message, filters):
 def more_like(db, state, taken, n=6):
     """'Show more like these': the next search matches after the cards already shown. No model call."""
     last = state.get("last")
-    if not last or not any(last["plan"]["queries"]):
+    if not last or len(last["shown"]) >= conversation_context.MAX_SHOWN:
         return []
+    if not last["plan"]["queries"]:
+        fallback = (state.get("course_context") or {}).get("reference_queries")
+        if not fallback:
+            return []
+        last["plan"] = {**last["plan"], "codes": [], "queries": fallback}
     p = {**last["plan"], "codes": [], "exclude": list(last["plan"].get("exclude", [])) + last["shown"]}
     codes = [b["code"] for b in retrieve(db, p, frozenset(taken), k=n, filters=last["filters"])]
-    last["shown"] += codes
+    last["shown"] = list(dict.fromkeys(last["shown"] + codes))[:conversation_context.MAX_SHOWN]
+    if context := state.get("course_context"):
+        context["shown"] = list(last["shown"])
+        if codes:
+            context["discussion"] = {"codes": codes, "filters": dict(last["filters"])}
+            context["pending"] = None
     return codes
 
 

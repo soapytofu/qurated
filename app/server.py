@@ -462,7 +462,7 @@ def _run_fast_chat(history, prior, message, preferences, favorites, taken, filte
     if not os.getenv(key_name, "").strip():
         yield sse({"type": "error", "text": f"Add {key_name} to app/.env and restart the app."})
         return
-    if pipeline.is_follow_up(message, history) or pipeline.just_asked(history):
+    if pipeline.is_follow_up(message, history, state) or pipeline.just_asked(history, state):
         search, router_cost = True, 0.0  # compare the courses we just showed, or answer our question
     else:
         search, router_cost = needs_q_data(message, prior)
@@ -701,10 +701,12 @@ def more(req: MoreRequest, user=Depends(current_user)):
     if entry is None:
         raise HTTPException(409, "This chat is busy. Please try again shortly.")
     try:
+        _maybe_reload()
         codes = pipeline.more_like(db, entry, store.taken(user["email"]))
+        filters = (entry.get("last") or {}).get("filters", {})
+        return {"cards": [c for code in codes if (c := db.card(code, filters=filters))]}
     finally:
         chat_state.release(key)
-    return {"cards": [c for c in map(db.card, codes) if c]}
 
 
 @app.get("/api/course/{code}")
