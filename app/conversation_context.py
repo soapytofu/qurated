@@ -99,7 +99,10 @@ def _merge(base, fresh, message):
 
 def resolve(message, context, parse):
     """Parse current content before referents, so explicit choices always take precedence."""
-    fresh = parse(_request_text(message))
+    # Reference-course syntax such as "instead of CS50" must reach the parser intact.
+    # Remove conversational scaffolding only after that explicit intent has been checked.
+    original = parse(message)
+    fresh = original if original.get('reference_codes') else parse(_request_text(message))
     pending = context.get('pending') or {}
     baseline = pending.get('plan') or (context.get('search') or {}).get('plan')
     if not baseline or SOCIAL.fullmatch(message):

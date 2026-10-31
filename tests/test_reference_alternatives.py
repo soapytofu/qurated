@@ -100,3 +100,20 @@ def test_uninformative_reference_titles_request_a_topic_instead_of_browsing():
     p = pipeline.plan(db, 'Alternatives to CS50', {})
     assert p['clarifications']
     assert pipeline.retrieve(db, p) == []
+
+
+@pytest.mark.parametrize('message', ['Find courses instead of CS50 in Spring 2027',
+                                   'More options like CS50 in Spring 2027'])
+def test_conversation_scaffolding_does_not_erase_reference_syntax(message):
+    db = intro_database()
+    p = pipeline.plan(db, message, {})
+    assert p['exclude'] == ['COMPSCI 50'] and not p['codes']
+    assert [c['code'] for c in pipeline.retrieve(db, p)] == ['COMPSCI 32']
+
+
+def test_reference_topic_and_review_scope_compose():
+    db = intro_database()
+    db.courses['COMPSCI 32']['offerings'] = [{'term': '2025 Fall'}]
+    p = pipeline.plan(db, 'Something like CS50 with Fall 2025 reviews in Spring 2027', {})
+    assert p['exclude'] == ['COMPSCI 50'] and p['subject'] == 'COMPSCI'
+    assert pipeline.effective_filters(p) == ({'q_term': '2025 Fall', 'subject': 'COMPSCI', 'term': '2027 Spring'}, [])

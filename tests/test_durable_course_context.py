@@ -213,6 +213,15 @@ def test_review_and_enrollment_dates_are_bound_independently():
     assert issues and 'Filters selects 2024 Spring' in issues[0]
 
 
+def test_review_scope_does_not_erase_unbound_numeric_metrics_or_accept_negation():
+    db = fixture()
+    p = pipeline.plan(db, 'Ethics courses with course rating at least 4.5 using Fall 2025 Q reports', {})
+    assert p['numeric_filters'] == {'min_overall': 4.5}
+    assert pipeline.effective_filters(p) == ({'min_overall': 4.5, 'q_term': '2025 Fall'}, [])
+    p = pipeline.plan(db, 'TEST0 without Fall 2025 reviews', {})
+    assert p['clarifications'] and pipeline.retrieve(db, p) == []
+
+
 def test_review_term_flows_to_candidates_cards_and_followups(chat, monkeypatch):
     db, ask, captured = chat
     received = []
