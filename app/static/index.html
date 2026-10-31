@@ -40,6 +40,11 @@
     <button class="notice-close" id="grading-notice-close" aria-label="Hide this notice">✕</button>
   </div>
 
+  <div class="notice" id="account-status" role="status" hidden>
+    <p id="account-status-text"></p>
+    <button class="link-btn" id="account-retry" hidden>Retry loading account</button>
+  </div>
+
   <div class="menu account-menu" id="account-menu" hidden>
     <div class="acct-name" id="me-name"></div>
     <div class="acct-email" id="me-email"></div>
@@ -206,6 +211,7 @@
     <label>Other things to remember about me<textarea name="notes" rows="3" placeholder="e.g. Already finished QRD&#10;Planning to study abroad junior spring"></textarea></label>
     <button type="button" class="pill pill-soft full" id="prefs-taken">Courses I've taken…</button>
     <p id="prefs-status" class="hint" role="status" aria-live="polite"></p>
+    <button class="pill pill-soft full" id="prefs-retry" hidden>Retry loading account</button>
     <button class="pill pill-fill full" id="prefs-save">Save preferences</button>
   </aside>
 
