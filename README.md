@@ -238,7 +238,7 @@ fall back to unrelated courses, and workload limits are not silently relaxed. �
 
 Chat recognizes explicit constraints such as “Spring 2027”, “under 5 hours”, “at most 6 hours per
 week”, and “effective lectures rated at least 4.5”. “Under” is strict; “at most” includes the
-boundary. Numerical ratings use the latest loaded Q report and exclude unknown values. Requested
+boundary. Numerical ratings average every available loaded Q report, including separate sections. Each report contributes equally; missing scores are omitted per metric. The Q-guide term filter limits these averages to one historical term and is separate from the upcoming catalog term filter. All displayed Q metrics support ascending and descending sorting, with unavailable values last. Requested
 thresholds intersect selected filters instead of weakening them. Unsupported years, multiple terms,
 out-of-range scores, and conflicting selected terms get a clarification before answer generation.
 Every course search displays an expandable **Search interpreted as** summary with its effective

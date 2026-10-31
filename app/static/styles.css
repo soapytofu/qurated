@@ -361,7 +361,9 @@ main { max-width: 1024px; margin: 0 auto; padding: 0 22px 170px; }
 }
 .results-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin: 6px 0 2px; }
 .results-head h2 { margin: 0; font-size: 28px; letter-spacing: -0.03em; }
-.results-head select { font: inherit; font-size: 14px; border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; background: var(--bg); }
+.sort-controls { display: flex; gap: 8px; flex-wrap: wrap; max-width: 100%; }
+.sort-metric { margin: 0; font-size: 13px; color: var(--text-2); overflow-wrap: anywhere; }
+.results-head select { max-width: 100%; min-width: 0; font: inherit; font-size: 14px; border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; background: var(--bg); }
 .results-sub { color: var(--text-2); font-size: 14px; margin: 4px 0 18px; }
 .results .more { display: block; margin: 0 auto 10px; }
 @media (max-width: 760px) { .seg { display: flex; padding: 10px; } .seg span:not(.fcount) { display: none; } }

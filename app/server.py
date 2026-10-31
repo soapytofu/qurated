@@ -30,7 +30,7 @@ import llm
 from guardrails import has_sensitive_text, PRIVACY_REPLY
 from chat_state import ChatState
 from request_safety import RequestSafetyMiddleware
-from courses import EXTRA_Q_SCORES, CATALOG_DIR, CourseDB, REPORTS_DIR, TAGS_FILE, GEN_EDS, term_rank
+from courses import BROWSE_SORTS, EXTRA_Q_SCORES, CATALOG_DIR, CourseDB, REPORTS_DIR, TAGS_FILE, GEN_EDS, term_rank
 
 load_dotenv(Path(__file__).parent / ".env")
 
@@ -71,7 +71,7 @@ SYSTEM = """You are Qurated, the Harvard Undergraduate Association's course advi
 that fit their interests, requirements, schedule and workload tolerance.
 
 You have tools over two sources:
-- Harvard Q reports (official student course evaluations) from Fall 2025 and Spring 2026: overall ratings, \
+- Harvard Q reports (official student course evaluations) from every loaded historical term: overall ratings, \
 workload in hours/week outside class, "would you recommend" scores, instructor ratings, why students enrolled, \
 and students' written advice to future students.
 - The my.harvard FAS course catalog for Fall 2026 and Spring 2027: which terms a course is offered, meeting \
@@ -94,6 +94,7 @@ no Q reviews yet. Q ratings describe past offerings, and the instructor may have
 - Use the catalog's Gen Ed / Divisional Distribution / QRD fields for requirement questions; don't guess them.
 - Students are undergraduates: skip courses whose level is "Primarily for Graduate Students" unless asked, \
 and skip independent study, thesis and dissertation listings.
+- Search/card metrics average all available report scores, or only the selected Q-guide term. Each report has equal weight; missing values are omitted. Average responses per report is not a total or unique student count. Raw report details retain their own response counts.
 - Ratings are on a 1-5 scale. FAS-wide averages are around 4.2-4.3 overall. A rating from a handful of \
 respondents is noisy; say so when it matters.
 - Keep replies concise and warm, like a sharp upperclassman giving advice. Use plain text and short paragraphs."""
@@ -599,6 +600,8 @@ def clean_filters(f):
     out = {}
     if f.get("term") in ("2026 Fall", "2027 Spring"):
         out["term"] = f["term"]
+    if isinstance(f.get("q_term"), str) and f["q_term"] in db.q_terms():
+        out["q_term"] = f["q_term"]
     if isinstance(f.get("subject"), str) and re.fullmatch(r"[A-Z][A-Z-]{0,11}", f["subject"]):
         out["subject"] = f["subject"]
     for k, lo, hi in (("min_overall", 1, 5), ("min_recommend", 1, 5),
@@ -637,7 +640,8 @@ def clean_filters(f):
 class BrowseRequest(BaseModel):
     filters: dict | None = None
     query: str = ""
-    sort: str = "rating"
+    sort: str = "overall"
+    direction: str | None = None
     offset: int = 0
 
 
@@ -651,10 +655,10 @@ def facets(user=Depends(current_user)):
 def browse(req: BrowseRequest, user=Depends(current_user)):
     """Direct structured search (no LLM): instant, free, and exactly what the filters say."""
     _maybe_reload()
-    sort = req.sort if req.sort in ("rating", "workload", "recommend", "reviews", "relevance") else "rating"
+    sort = req.sort if req.sort in BROWSE_SORTS else "overall"
     if sort == "relevance" and not req.query.strip():
-        sort = "rating"
-    return db.browse(clean_filters(req.filters), query=req.query[:200], sort=sort,
+        sort = "overall"
+    return db.browse(clean_filters(req.filters), query=req.query[:200], sort=sort, direction=req.direction,
                      offset=max(0, min(req.offset, 5000)), limit=24, exclude=frozenset(store.taken(user["email"])))
 
 
