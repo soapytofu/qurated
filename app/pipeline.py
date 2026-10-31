@@ -14,6 +14,7 @@ import guard
 import search_planner
 import search_constraints
 from accessibility_evidence import label_instructor_availability
+import course_evidence
 
 from courses import UPCOMING, GEN_EDS, EXTRA_Q_SCORES, tokenize
 from guardrails import MAX_PICKS, POLICY, SAFE_FAILURE, validate_answer, validate_pick
@@ -128,7 +129,8 @@ def plan(db, message, preferences, history=()):
 
     def finish(value):
         return {**value, "numeric_filters": extracted["filters"], "term": extracted["term"],
-                "clarifications": extracted["clarifications"]}
+                "clarifications": extracted["clarifications"],
+                "required_policies": course_evidence.policies_requested(message)}
 
     if is_follow_up(message, history) and MORE_OPTIONS.search(message):
         previous = previous_picks(history)
@@ -291,6 +293,10 @@ def retrieve(db, p, taken=frozenset(), k=10, filters=None):
                     continue
                 if b["code"] in seen:
                     continue
+                course = db.lookup(b["code"]) or {}
+                if (course_evidence.only_hypothetical_support(course, p["queries"])
+                        or not course_evidence.supports_policies(course, p.get("required_policies", []))):
+                    continue
                 if p["term"] in UPCOMING and not (isinstance(b["offered"], list) and p["term"] in b["offered"]):
                     continue  # student asked about a specific term; skip courses not offered then
                 cross = set((db.lookup(b["code"]) or {}).get("also_listed_as", []))
@@ -308,7 +314,8 @@ def retrieve(db, p, taken=frozenset(), k=10, filters=None):
         # (many are open to undergrads), ranked after every undergrad match. Every other filter still applies.
         collect(search_all({**filters, "include_grad": True}, undergrad=False))
     explicit = [db.brief(c["code"], filters=filters) for code in p["codes"][:6]
-                if (c := db.filtered_lookup(code, filters, taken))]
+                if (c := db.filtered_lookup(code, filters, taken))
+                and course_evidence.supports_policies(c, p.get("required_policies", []))]
     explicit_codes = {b["code"] for b in explicit}
     cands, identities = [], set()
     for candidate in explicit + out:
@@ -332,6 +339,7 @@ def retrieve(db, p, taken=frozenset(), k=10, filters=None):
                          **({"graduate_level": True} if grad else {}),
                          "description": (cat.get("description") or "")[:180] or None,
                          "offered_sections": offered,
+                         "evidence_limits": course_evidence.evidence_summary(db.lookup(b["code"]) or {}),
                          "student_comments": [x[:200] for x in d.get("comments", [])[:n_comments]]})
     return enriched
 
@@ -476,7 +484,9 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
         print(f"[retrieval] loaded={len(db.courses)} candidates={len(cands)} "
               f"category={p.get('gen_ed_category') or 'any'}", flush=True)
         if not cands:
-            yield sse({"type": "text", "delta": "I couldn't find matching courses in the loaded catalog. Try changing your filters or search terms; this does not mean no such courses exist."})
+            reply = (course_evidence.policy_limit_reply(p["required_policies"]) if p.get("required_policies")
+                     else "I couldn't find matching courses in the loaded catalog. Try changing your filters or search terms; this does not mean no such courses exist.")
+            yield sse({"type": "text", "delta": reply})
             return planner_cost, time.perf_counter() - t0
     yield sse({"type": "status", "text": "Preparing a grounded answer"})
     # Structured data keeps source text separate from trusted system instructions.

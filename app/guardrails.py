@@ -2,6 +2,7 @@
 import re
 
 import guard
+from course_evidence import validate_claims
 
 POLICY = """
 Safety and trust rules (apply to every reply):
@@ -58,12 +59,13 @@ def validate_pick(pick, allowed, taken, db, verify_quote):
                        if db.identity_keys(code) & db.identity_keys(candidate)]
         if len(equivalents) == 1:
             code = equivalents[0]
-    if code not in allowed or db.is_taken(code, taken):
+    if resolved is None or code not in allowed or db.is_taken(code, taken):
         raise ValueError('unsupported course')
     if not reason.strip() or len(reason) > 600 or len(quote) > 300:
         raise ValueError('invalid course text')
     if has_sensitive_text(reason) or guard.leaked(reason):
         raise ValueError('sensitive output')
+    validate_claims(reason, [resolved])
     return dict(code=code, reason=reason, quote=verify_quote(code, quote))
 
 
@@ -91,4 +93,5 @@ def validate_answer(value, candidates, taken, db, verify_quote):
     text = advice + ' '.join(p['reason'] + (p['quote'] or '') for p in validated)
     if has_sensitive_text(text) or guard.leaked(advice):
         raise ValueError('sensitive output')
+    validate_claims(advice, [c for candidate in candidates if (c := db.lookup(candidate['code']))])
     return validated, advice.strip()
