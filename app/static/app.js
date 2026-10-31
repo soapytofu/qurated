@@ -463,15 +463,15 @@ function renderFavs() {
   $("#fav-list").innerHTML = items.length
     ? items.map((c) => `
         <div class="fav-item" data-code="${esc(c.code)}">
-          <div class="t"><b>${esc(c.code)} · ${esc(c.title)}</b>
-            <span>Overall ${fmt(c.overall)} · ${fmt(c.workload_hrs)} hrs/wk · Recommend ${fmt(c.recommend)}</span></div>
-          <button class="iconbtn plain" aria-label="Remove">✕</button>
+          <button type="button" class="t"><b>${esc(c.code)} · ${esc(c.title)}</b>
+            <span>Overall ${fmt(c.overall)} · ${fmt(c.workload_hrs)} hrs/wk · Recommend ${fmt(c.recommend)}</span></button>
+          <button class="iconbtn plain remove-favorite" aria-label="Remove ${esc(c.code)} from favorites">✕</button>
         </div>`).join("")
     : '<p class="empty">Tap the heart on any course to save it here.</p>';
   $$("#fav-list .fav-item").forEach((el) => {
     const c = favorites[el.dataset.code];
     $(".t", el).addEventListener("click", () => openDetail(c.code));
-    $("button", el).addEventListener("click", () => toggleFav(c));
+    $(".remove-favorite", el).addEventListener("click", () => toggleFav(c));
   });
 }
 ["#open-favs", "#nav-favs", "#tile-favs"].forEach((id) => $(id).addEventListener("click", () => openSheet("#favs")));

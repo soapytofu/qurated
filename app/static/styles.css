@@ -208,7 +208,7 @@ main { max-width: 1024px; margin: 0 auto; padding: 0 22px 170px; }
 .sheet input[type=range] { accent-color: var(--crimson); }
 .val { font-weight: 400; color: var(--text-2); }
 .fav-item { display: flex; gap: 12px; align-items: flex-start; padding: 14px 0; border-bottom: 1px solid var(--line-soft); }
-.fav-item .t { flex: 1; cursor: pointer; }
+.fav-item .t { flex: 1; min-width: 0; cursor: pointer; border: 0; padding: 0; background: none; color: inherit; font: inherit; text-align: left; }
 .fav-item .t b { display: block; font-size: 16px; }
 .fav-item .t span { font-size: 13px; color: var(--text-2); }
 .empty { color: var(--text-2); font-size: 15px; text-align: center; padding: 40px 10px; }
