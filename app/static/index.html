@@ -195,15 +195,16 @@
   <aside class="sheet" id="prefs" hidden aria-label="Preferences">
     <header><h2>Your preferences</h2><button class="iconbtn plain close" aria-label="Close panel" data-close>✕</button></header>
     <p class="hint">Qurated keeps these in mind for every question. They're saved to your account.</p>
-    <label>Concentration (or intended)<input name="concentration" placeholder="e.g. Computer Science"></label>
+    <p class="hint" id="prefs-limits">Text fields allow up to 300 characters each. Other things to remember allows up to 600.</p>
+    <label>Concentration (or intended)<input name="concentration" maxlength="300" aria-describedby="prefs-limits" placeholder="e.g. Computer Science"></label>
     <label>Year<select name="year"><option value="">—</option><option>First-year</option><option>Sophomore</option><option>Junior</option><option>Senior</option></select></label>
-    <label>Interests<textarea name="interests" rows="2" placeholder="e.g. AI ethics, film, climate policy"></textarea></label>
-    <label>Requirements I need to fill<input name="requirements" placeholder="e.g. Gen Ed: Ethics & Civics, QRD"></label>
+    <label>Interests<textarea name="interests" rows="2" maxlength="300" aria-describedby="prefs-limits" placeholder="e.g. AI ethics, film, climate policy"></textarea></label>
+    <label>Requirements I need to fill<input name="requirements" maxlength="300" aria-describedby="prefs-limits" placeholder="e.g. Gen Ed: Ethics & Civics, QRD"></label>
     <label>Max workload <span class="val" id="wl-val">no limit</span>
       <input type="range" name="max_workload_hrs" min="0" max="20" step="1" value="0"></label>
-    <label>Teaching style I like<input name="style" placeholder="e.g. small seminars, project-based, no exams"></label>
-    <label>Avoid<input name="avoid" placeholder="e.g. 9am classes, heavy problem sets"></label>
-    <label>Other things to remember about me<textarea name="notes" rows="3" placeholder="e.g. Already finished QRD&#10;Planning to study abroad junior spring"></textarea></label>
+    <label>Teaching style I like<input name="style" maxlength="300" aria-describedby="prefs-limits" placeholder="e.g. small seminars, project-based, no exams"></label>
+    <label>Avoid<input name="avoid" maxlength="300" aria-describedby="prefs-limits" placeholder="e.g. 9am classes, heavy problem sets"></label>
+    <label>Other things to remember about me<textarea name="notes" rows="3" maxlength="600" aria-describedby="prefs-limits" placeholder="e.g. Already finished QRD&#10;Planning to study abroad junior spring"></textarea></label>
     <button type="button" class="pill pill-soft full" id="prefs-taken">Courses I've taken…</button>
     <p id="prefs-status" class="hint" role="status" aria-live="polite"></p>
     <button class="pill pill-fill full" id="prefs-save">Save preferences</button>
