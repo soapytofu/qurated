@@ -59,3 +59,44 @@ def test_ordinary_exact_lookup_and_comparison_still_work():
     similar = pipeline.plan(db, 'Something like CS50 but less work', {})
     assert similar['exclude'] == ['COMPSCI 50']
     assert 'introduction' in ' '.join(similar['queries'])
+
+
+@pytest.mark.parametrize('message', [
+    'Something like CS50 and CS32',
+    'Something like CS50 or CS32',
+    'Alternatives to CS50 and CS32 for Spring 2027',
+])
+def test_multiple_references_keep_the_topic_instead_of_browsing_all_subjects(message):
+    db = intro_database()
+    p = pipeline.plan(db, message, {})
+    assert p['subject'] == 'COMPSCI'
+    assert any(p['queries'])
+    # The remaining biology course must not become an alternative to two CS courses.
+    assert pipeline.retrieve(db, p) == []
+
+
+@pytest.mark.parametrize('message', [
+    'Something like CS50 but lighter',
+    'Alternatives to CS50 that are easier',
+])
+def test_comparative_modifiers_do_not_replace_the_reference_topic(message):
+    db = intro_database()
+    p = pipeline.plan(db, message, {})
+    assert p['subject'] == 'COMPSCI'
+    assert 'introduction' in ' '.join(p['queries'])
+    assert [c['code'] for c in pipeline.retrieve(db, p)] == ['COMPSCI 32']
+
+
+def test_multiple_references_still_allow_an_explicit_different_topic():
+    db = intro_database()
+    p = pipeline.plan(db, 'Find biology courses other than CS50 and CS32', {})
+    assert [c['code'] for c in pipeline.retrieve(db, p)] == ['BIO 1']
+
+
+def test_uninformative_reference_titles_request_a_topic_instead_of_browsing():
+    db = intro_database()
+    db.courses['COMPSCI 50']['title'] = 'Course'
+    db._build_index()
+    p = pipeline.plan(db, 'Alternatives to CS50', {})
+    assert p['clarifications']
+    assert pipeline.retrieve(db, p) == []

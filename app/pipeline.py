@@ -133,6 +133,7 @@ def _request_plan(db, message, preferences):
         value["clarifications"] += review["clarifications"]
         value["exclude"] = list(dict.fromkeys(value.get("exclude", []) + reference["exclude"]))
         value["reference_codes"] = reference["exclude"]
+        value["clarifications"] = list(dict.fromkeys(value.get("clarifications", []) + reference["clarifications"]))
         return value
     extracted = search_constraints.extract(message)
     parts = [x for x in re.split(r"(?<=[.!?])\s+|\s*;\s*", extracted["query"]) if x.strip()]
