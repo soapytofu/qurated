@@ -13,6 +13,7 @@ from itertools import zip_longest
 import guard
 import search_planner
 import search_constraints
+from schedule_constraints import extract_schedule, merge_schedule
 
 from courses import UPCOMING, GEN_EDS, EXTRA_Q_SCORES, tokenize
 from guardrails import MAX_PICKS, POLICY, SAFE_FAILURE, validate_answer, validate_pick
@@ -120,13 +121,16 @@ def plan(db, message, preferences, history=()):
         # "STEM" only makes sense with the question it answers: search on both.
         message = history[-2]["content"] + " " + message
     extracted = search_constraints.extract(message)
+    extracted['query'], schedule_filters, schedule_issues = extract_schedule(extracted['query'])
+    extracted['clarifications'].extend(schedule_issues)
     parts = [x for x in re.split(r"(?<=[.!?])\s+|\s*;\s*", extracted["query"]) if x.strip()]
     asks = [x for x in parts if not SELF_DESC.match(x)]
     if asks:
         extracted["query"] = " ".join(asks)
 
     def finish(value):
-        return {**value, "numeric_filters": extracted["filters"], "term": extracted["term"],
+        return {**value, "schedule_filters": merge_schedule(schedule_filters, value.get("schedule_filters")),
+                "numeric_filters": extracted["filters"], "term": extracted["term"],
                 "clarifications": extracted["clarifications"]}
 
     if is_follow_up(message, history) and MORE_OPTIONS.search(message):
@@ -242,7 +246,7 @@ def describe_filters(f):
 
 def effective_filters(p, selected=None):
     """Intersect all requested constraints. Return conflicts instead of choosing a winner."""
-    filters = dict(selected or {})
+    filters = merge_schedule(p.get("schedule_filters", {}), selected)
     conflicts = list(p.get("clarifications", []))
     for key, value in (("subject", p.get("subject")), ("gen_ed", p.get("gen_ed_category")),
                        ("term", p.get("term") if p.get("term") in UPCOMING else None)):
