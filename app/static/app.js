@@ -495,7 +495,10 @@ let sugTimer = null, suggestionVersion = 0;
 tIn.addEventListener("input", () => {
   clearTimeout(sugTimer);
   const version = ++suggestionVersion, q = tIn.value.trim();
-  if (q.length < 2) { tSug.hidden = true; return; }
+  tSug.hidden = true;
+  tSug.replaceChildren();
+  tSug.dataset.query = "";
+  if (q.length < 2) return;
   sugTimer = setTimeout(async () => {
     try {
       const response = await api(`/api/courses/suggest?q=${enc(q)}`);
@@ -506,9 +509,11 @@ tIn.addEventListener("input", () => {
         ? items.map(i => `<button data-code="${esc(i.code)}" data-title="${esc(i.title)}"${taken.has(i.code) ? " disabled" : ""}><b>${esc(i.code)}</b> ${esc(i.title)}${taken.has(i.code) ? " ✓" : ""}</button>`).join("")
         : '<div class="none">No matching course</div>';
       tSug.hidden = false;
+      tSug.dataset.query = q;
       $$("button", tSug).forEach(b => b.addEventListener("click", () => {
         toggleTaken(b.dataset.code, b.dataset.title);
-        suggestionVersion++; tIn.value = ""; tSug.hidden = true; tIn.focus();
+        suggestionVersion++; tIn.value = ""; tSug.hidden = true;
+        tSug.replaceChildren(); tSug.dataset.query = ""; tIn.focus();
       }));
     } catch {
       if (version !== suggestionVersion) return;
@@ -517,7 +522,10 @@ tIn.addEventListener("input", () => {
   }, 180);
 });
 tIn.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") { e.preventDefault(); $("button:not([disabled])", tSug)?.click(); }
+  if (e.key === "Enter") {
+    e.preventDefault();
+    if (!tSug.hidden && tIn.value.trim() === tSug.dataset.query) $("button:not([disabled])", tSug)?.click();
+  }
 });
 function openTaken() { closeAll(); acctMenu.hidden = true; openSheet("#taken"); tIn.focus(); }
 $("#prefs-taken").addEventListener("click", openTaken);
