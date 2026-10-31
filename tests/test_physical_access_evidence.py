@@ -39,3 +39,24 @@ def test_model_sees_unambiguous_metric_semantics():
     assert c['instructor_availability_outside_class'] == 4.9
     assert 'no information about physical classroom' in c['instructor_availability_definition']
     assert raw['accessibility'] == 4.9
+
+
+@pytest.mark.parametrize('message', [
+    'Recommend courses about wheelchair design and assistive technology.',
+    'I want to study wheelchair sports history.',
+    'Find courses on physical accessibility in urban design.',
+    'Recommend wheelchair design courses.',
+    'Are there classes about accessible buildings?',
+    'Find a welcoming instructor.',
+])
+def test_accessibility_as_an_academic_topic_does_not_block_course_discovery(message):
+    assert physical_access_reply(message) is None
+
+
+@pytest.mark.parametrize('message', [
+    'Courses about wheelchair design with step-free classrooms.',
+    'I need physical access to courses about disability policy.',
+    'Courses about calculus in an accessible classroom.',
+])
+def test_a_separate_physical_access_requirement_still_receives_the_limitation(message):
+    assert physical_access_reply(message) is not None
