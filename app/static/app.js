@@ -27,6 +27,7 @@ let prefs = {};
 let favorites = {}; // code -> card
 let taken = new Map(); // code -> title
 let isAdmin = false; // admins (ADMIN_EMAILS on the server) also see per-answer cost
+let accountReady = false, accountLoad = null;
 
 // ---------- helpers ----------
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -90,7 +91,7 @@ function cardHTML(c) {
   const overallHi = c.overall != null && c.overall_fas_avg != null && c.overall > c.overall_fas_avg ? " hi" : "";
   return `
     <article class="card" data-code="${esc(c.code)}" tabindex="0">
-      <button class="fav${on}" aria-label="Favorite ${esc(c.code)}" aria-pressed="${!!on}">${ICON_HEART}</button>
+      <button class="fav${on}" aria-label="Favorite ${esc(c.code)}" aria-pressed="${!!on}"${accountReady ? "" : " disabled"}>${ICON_HEART}</button>
       <div class="code">${esc(c.code)}${c.gen_ed ? ` <span class="gened">${esc(c.gen_ed)}</span>` : ""}${c.grad_level ? ' <span class="gened grad" title="Graduate-level: may need instructor permission">Graduate</span>' : ""}</div>
       <h3>${esc(c.title)}</h3>
       ${c.next_offered ? `<div class="meets">${ICON_CAL}${esc(c.next_offered)}</div>` : ""}
@@ -109,7 +110,7 @@ function cardHTML(c) {
         <div class="term">${esc(c.term || "")}</div>
       </div>
       <div class="card-actions">
-        <button class="taken-btn${taken.has(c.code) ? " on" : ""}" aria-pressed="${taken.has(c.code)}">${taken.has(c.code) ? "✓ Taken" : "I've taken this"}</button>
+        <button class="taken-btn${taken.has(c.code) ? " on" : ""}" aria-pressed="${taken.has(c.code)}"${accountReady ? "" : " disabled"}>${taken.has(c.code) ? "✓ Taken" : "I've taken this"}</button>
         <span class="details-link" aria-hidden="true">Details ›</span>
       </div>
     </article>`;
@@ -140,6 +141,7 @@ function syncCardButtons(code) {
 
 const pendingFavorites = new Set(), pendingTaken = new Set();
 async function toggleFav(card) {
+  try { await loadAccount(); } catch (err) { saveError(err); return; }
   if (pendingFavorites.has(card.code)) return;
   pendingFavorites.add(card.code);
   const previous = favorites[card.code];
@@ -156,6 +158,7 @@ async function toggleFav(card) {
 }
 
 async function toggleTaken(code, title) {
+  try { await loadAccount(); } catch (err) { saveError(err); return; }
   if (pendingTaken.has(code)) return;
   pendingTaken.add(code);
   const previous = taken.get(code);
@@ -339,13 +342,20 @@ function addMemoryNote(bot, before, facts) {
   const el = document.createElement("div");
   el.className = "memory-note";
   el.innerHTML = `<span>Noted for this chat: ${facts.map(esc).join(" · ")}</span> <button class="linkbtn">Save to my preferences</button>`;
-  $("button", el).addEventListener("click", (e) => {
-    const notes = (prefs.notes || "").split("\n").filter(Boolean);
-    facts.forEach((f) => { if (!notes.includes(f)) notes.push(f); });
-    prefs.notes = notes.join("\n").slice(-600);
-    fillPrefs();
-    savePrefs();
-    e.target.replaceWith(Object.assign(document.createElement("span"), { className: "saved", textContent: "Saved ✓" }));
+  $("button", el).addEventListener("click", async (e) => {
+    const button = e.currentTarget;
+    button.disabled = true;
+    try {
+      await loadAccount();
+      const notes = (prefs.notes || "").split("\n").filter(Boolean);
+      facts.forEach((f) => { if (!notes.includes(f)) notes.push(f); });
+      prefs.notes = notes.join("\n").slice(-600);
+      fillPrefs();
+      savePrefs();
+      await flushPrefs();
+      button.replaceWith(Object.assign(document.createElement("span"), { className: "saved", textContent: "Saved ✓" }));
+    } catch (err) { saveError(err); }
+    finally { button.disabled = false; }
   });
   bot.insertBefore(el, before);
 }
@@ -421,6 +431,7 @@ function savePrefs() {
   prefsTimer = setTimeout(() => flushPrefs().catch(() => {}), 500);
 }
 async function flushPrefs() {
+  await loadAccount();
   clearTimeout(prefsTimer);
   if (prefsDirty) {
     const snapshot = { ...prefs };
@@ -441,11 +452,12 @@ $("#prefs-save").addEventListener("click", async () => {
   try { await flushPrefs(); closeAll(); } catch {} finally { button.disabled = false; }
 });
 function fillPrefs() {
-  $$("#prefs [name]").forEach((el) => { if (prefs[el.name] != null && el.type !== "range") el.value = prefs[el.name]; });
+  $$("#prefs [name]").forEach((el) => { if (el.type !== "range") el.value = prefs[el.name] ?? ""; });
   syncWorkload();
 }
 $$("#prefs [name]").forEach((el) => {
   el.addEventListener("input", () => {
+    if (!accountReady) return;
     prefs[el.name] = el.type === "range" ? Number(el.value) : el.value;
     savePrefs();
     if (el.type === "range") syncWorkload();
@@ -459,7 +471,7 @@ function renderFavs() {
   const badge = $("#fav-count");
   badge.hidden = !items.length;
   badge.textContent = items.length;
-  $("#compare-favs").disabled = items.length < 2;
+  $("#compare-favs").disabled = !accountReady || items.length < 2;
   $("#fav-list").innerHTML = items.length
     ? items.map((c) => `
         <div class="fav-item" data-code="${esc(c.code)}">
@@ -523,9 +535,41 @@ function openTaken() { closeAll(); acctMenu.hidden = true; openSheet("#taken"); 
 $("#prefs-taken").addEventListener("click", openTaken);
 
 // ---------- load the student's saved account (with one-time move from this browser) ----------
-async function loadAccount() {
-  const acct = await api("/api/account").then(r => r.ok ? r.json() : null).catch(() => null);
-  if (!acct) return;
+function syncAccountControls() {
+  $$("#prefs [name], #prefs-save, #taken-input, .card .fav, .card .taken-btn, #d-fav, #d-taken")
+    .forEach(el => el.disabled = !accountReady);
+  const code = $("#detail .detail-actions")?.dataset.code;
+  if (accountReady && code) {
+    $("#d-fav").textContent = favorites[code] ? "♥ Favorited" : "♡ Favorite";
+    $("#d-taken").textContent = taken.has(code) ? "✓ Taken" : "I've taken this";
+  }
+}
+function accountStatus(message, retry = false) {
+  $("#account-status").hidden = !message;
+  $("#account-status-text").textContent = message;
+  $("#account-retry").hidden = !retry;
+  $("#prefs-retry").hidden = !retry;
+  $("#prefs-status").textContent = message;
+}
+function loadAccount() {
+  if (accountReady) return Promise.resolve();
+  if (accountLoad) return accountLoad;
+  accountStatus("Loading your saved account…");
+  syncAccountControls();
+  accountLoad = hydrateAccount().catch(() => {
+    const message = "Your saved account couldn't be loaded. Retry before making changes.";
+    accountStatus(message, true);
+    throw new Error(message);
+  }).finally(() => { accountLoad = null; syncAccountControls(); });
+  return accountLoad;
+}
+async function hydrateAccount() {
+  const response = await api("/api/account");
+  if (!response.ok) throw new Error("account unavailable");
+  const acct = await response.json();
+  if (!Array.isArray(acct.favorites) || !Array.isArray(acct.taken) || !acct.prefs || typeof acct.prefs !== "object") {
+    throw new Error("invalid account");
+  }
   favorites = Object.fromEntries(acct.favorites.map((c) => [c.code, c]));
   taken = new Map(acct.taken.map((t) => [t.code, t.title]));
   prefs = acct.prefs || {};
@@ -547,10 +591,13 @@ async function loadAccount() {
     }
     localStorage.removeItem("hua.prefs");
   } catch (err) { saveError(err); }
+  accountReady = true;
+  accountStatus("");
   renderFavs(); renderTaken(); fillPrefs();
-  Object.keys(favorites).forEach(syncCardButtons);
+  $$(".card").forEach(card => syncCardButtons(card.dataset.code));
 }
-loadAccount();
+["#account-retry", "#prefs-retry"].forEach(id => $(id).addEventListener("click", () => loadAccount().catch(() => {})));
+loadAccount().catch(() => {});
 
 // ---------- course detail ----------
 function safeExternalURL(value) {
@@ -595,7 +642,7 @@ async function openDetail(code) {
     <div class="code">${esc(c.code)}${c.also_listed_as.length ? " · " + esc(c.also_listed_as.join(" · ")) : ""}</div>
     <h2>${esc(c.title)}</h2>
     <p class="meta">${esc(c.dept)}</p>
-    <div class="detail-actions">
+    <div class="detail-actions" data-code="${esc(c.code)}">
       <button class="pill pill-soft" id="d-fav">${favorites[c.code] ? "♥ Favorited" : "♡ Favorite"}</button>
       <button class="pill pill-soft" id="d-taken">${taken.has(c.code) ? "✓ Taken" : "I've taken this"}</button>
     </div>
@@ -623,6 +670,7 @@ async function openDetail(code) {
     await toggleTaken(c.code, c.title);
     $("#d-taken").textContent = taken.has(c.code) ? "✓ Taken" : "I've taken this";
   });
+  syncAccountControls();
 }
 
 // ---------- account ----------
