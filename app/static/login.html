@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/styles.css?v=17">
-  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="/static/login.js" defer></script>
 </head>
 <body class="login-page">
   <nav class="globalnav">
@@ -22,7 +22,9 @@
     <p class="tagline">Ask Qurated what you want out of a class. It reads thousands of Q reports so you don't have to.</p>
     <div class="login-box">
       <div id="gsi-button" class="gsi-slot"></div>
-      <p class="login-error" id="login-error" hidden></p>
+      <p id="login-status" class="fine" role="status">Loading sign-in…</p>
+      <p class="login-error" id="login-error" role="alert" hidden></p>
+      <button type="button" class="pill pill-soft" id="login-retry" hidden>Retry sign-in</button>
       <p class="fine" id="domain-note">Sign in with your @college.harvard.edu Google account.</p>
     </div>
     <p class="fine privacy">We only see your name and email address. They're used solely to check that you're a Harvard student.</p>
@@ -53,45 +55,6 @@
     <p>Qurated is a Harvard Undergraduate Association project. It is not an official Harvard University service. Q report data is shown only to signed-in Harvard students. Always confirm course details on my.harvard.</p>
   </footer>
 
-  <script>
-    const err = document.getElementById("login-error");
-    function showError(msg) { err.textContent = msg; err.hidden = false; }
 
-    async function onCredential(resp) {
-      err.hidden = true;
-      const r = await fetch("/api/auth/google", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ credential: resp.credential }),
-      });
-      if (r.ok) { location.replace("/"); return; }
-      const body = await r.json().catch(() => ({}));
-      showError(body.detail || "Sign-in failed. Please try again.");
-    }
-
-    async function init() {
-      const cfg = await fetch("/api/auth/config").then((r) => r.json());
-      const domains = cfg.allowed_domains.map((d) => "@" + d).join(" or ");
-      document.getElementById("domain-note").textContent = `Sign in with your ${domains} Google account.`;
-      if (!cfg.google_client_id) {
-        showError("Google sign-in isn't configured yet: set GOOGLE_CLIENT_ID in app/.env and restart the server.");
-        return;
-      }
-      const start = () => {
-        google.accounts.id.initialize({
-          client_id: cfg.google_client_id,
-          callback: onCredential,
-          hd: cfg.allowed_domains.length === 1 ? cfg.allowed_domains[0] : undefined, // hint Google's account picker
-          ux_mode: "popup",
-          auto_select: false,
-        });
-        google.accounts.id.renderButton(document.getElementById("gsi-button"), {
-          theme: "outline", size: "large", shape: "pill", text: "continue_with", width: 300,
-        });
-      };
-      if (window.google?.accounts?.id) start();
-      else window.addEventListener("load", start);
-    }
-    init();
-  </script>
 </body>
 </html>
