@@ -458,6 +458,25 @@ def _system(extra=""):
     return blocks + ([{"type": "text", "text": extra}] if extra else [])
 
 
+def empty_result_reply(db, p, message, taken):
+    named = p.get("codes", [])
+    if named and all(db.is_taken(code, taken) for code in named):
+        return (", ".join(named) + (" is" if len(named) == 1 else " are") +
+                " marked as taken in your saved courses, so I excluded " + ("it" if len(named) == 1 else "them") +
+                " from recommendations. You can change this in Courses I've taken, or ask for alternatives.")
+    unknown = [m.group().upper() for m in CODE_RE.finditer(message)
+               if re.match(r"[A-Z][A-Z-]+\s?\d", m.group())
+               and not re.match(r"(?:SPRING|SUMMER|FALL|AUTUMN|WINTER)\b", m.group(), re.I)
+               and not db.lookup(m.group())]
+    if unknown:
+        return ("I couldn't find " + ", ".join(dict.fromkeys(unknown)) +
+                " in the loaded catalog. Check the course code, try its title, or use Browse courses to find it.")
+    if p.get("required_policies"):
+        return course_evidence.policy_limit_reply(p["required_policies"])
+    return ("I couldn't find matching courses in the loaded catalog. Try changing your filters or search terms; "
+            "this does not mean no such courses exist.")
+
+
 def stream_answer(client, db, history, message, preferences, favorites, taken, search, sse, card_for, verify_quote,
                   filters=None, state=None):
     """Validate model output before emitting it. `state` holds per-chat memory: remembered facts and the
@@ -507,8 +526,7 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
               f"category={p.get('gen_ed_category') or 'any'}", flush=True)
         if not cands:
             conversation_context.pending_result(state, "no_results")
-            reply = (course_evidence.policy_limit_reply(p["required_policies"]) if p.get("required_policies")
-                     else "I couldn't find matching courses in the loaded catalog. Try changing your filters or search terms; this does not mean no such courses exist.")
+            reply = empty_result_reply(db, p, message, taken)
             yield sse({"type": "text", "delta": reply})
             return planner_cost, time.perf_counter() - t0
     yield sse({"type": "status", "text": "Preparing a grounded answer"})
