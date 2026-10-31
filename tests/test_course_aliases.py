@@ -144,4 +144,7 @@ def test_named_course_does_not_fall_back_to_other_courses_mentioning_its_code():
     p = plan(db, 'Tell me about CS124', {})
     assert [c['code'] for c in retrieve(db, p)] == ['COMPSCI 1240']
     assert retrieve(db, p, taken={'CS124'}) == []
-    assert plan(db, 'Courses except CS124', {})['clarifications']
+    excluded = plan(db, 'Courses except CS124', {})
+    assert not excluded['clarifications']
+    assert excluded['exclude'] == ['COMPSCI 1240']
+    assert all(c['code'] != 'COMPSCI 1240' for c in retrieve(db, excluded))

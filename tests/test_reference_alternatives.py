@@ -1,0 +1,119 @@
+import pytest
+import pipeline
+from test_retrieval import database
+
+
+def intro_database():
+    db = database()
+    rows = list(db.courses.values())[:4]
+    db.courses = {}
+    for row, code, title in zip(rows, ['COMPSCI 50', 'COMPSCI 32', 'COMPSCI 50X', 'BIO 1'],
+                               ['Introduction to Computer Science', 'Introduction to Computer Science with Python',
+                                'Introduction to Computer Science', 'Introduction to Biology']):
+        row.update(code=code, title=title)
+        row['catalog']['offered'][0]['term'] = '2027 Spring'
+        row['catalog']['description'] = title
+        db.courses[code] = row
+    db.courses['COMPSCI 50']['also_listed_as'] = ['COMPSCI 50X']
+    db.courses['COMPSCI 50X']['also_listed_as'] = ['COMPSCI 50']
+    db._build_index()
+    return db
+
+
+@pytest.mark.parametrize('message', [
+    'Recommend a computer science course other than CS50 in Spring 2027',
+    'Suggest alternatives to CS50 for Spring 2027',
+    'CS50 alternatives for Spring 2027',
+    'Find courses like CS50 in Spring 2027',
+])
+def test_reference_is_not_recommended_or_reintroduced_as_crosslisting(message):
+    db = intro_database()
+    p = pipeline.plan(db, message, {})
+    courses = pipeline.retrieve(db, p)
+    assert p['term'] == '2027 Spring'
+    assert p['queries'] and not p['codes']
+    assert 'COMPSCI 32' in {c['code'] for c in courses}
+    assert not {'COMPSCI 50', 'COMPSCI 50X'} & {c['code'] for c in courses}
+
+
+def test_multiple_exclusions_and_explicit_replacement():
+    db = intro_database()
+    p = pipeline.plan(db, 'Courses other than CS50 and CS32 in Spring 2027', {})
+    assert set(p['exclude']) == {'COMPSCI 50', 'COMPSCI 32'}
+    p = pipeline.plan(db, 'Not CS50, but CS32 in Spring 2027', {})
+    assert p['codes'] == ['COMPSCI 32']
+    assert p['exclude'] == ['COMPSCI 50']
+
+
+def test_explicit_topic_and_history_do_not_turn_exclusion_into_comparison():
+    db = intro_database()
+    history = [{'role': 'assistant', 'content': '(Recommended: COMPSCI 50)'}]
+    p = pipeline.plan(db, 'Find biology courses other than CS50 in Spring 2027', {}, history)
+    assert [c['code'] for c in pipeline.retrieve(db, p)] == ['BIO 1']
+
+
+def test_ordinary_exact_lookup_and_comparison_still_work():
+    db = intro_database()
+    assert pipeline.plan(db, 'What is CS50 like?', {})['codes'] == ['COMPSCI 50']
+    assert pipeline.plan(db, 'Compare CS50 and CS32', {})['codes'] == ['COMPSCI 50', 'COMPSCI 32']
+    similar = pipeline.plan(db, 'Something like CS50 but less work', {})
+    assert similar['exclude'] == ['COMPSCI 50']
+    assert 'introduction' in ' '.join(similar['queries'])
+
+
+@pytest.mark.parametrize('message', [
+    'Something like CS50 and CS32',
+    'Something like CS50 or CS32',
+    'Alternatives to CS50 and CS32 for Spring 2027',
+])
+def test_multiple_references_keep_the_topic_instead_of_browsing_all_subjects(message):
+    db = intro_database()
+    p = pipeline.plan(db, message, {})
+    assert p['subject'] == 'COMPSCI'
+    assert any(p['queries'])
+    # The remaining biology course must not become an alternative to two CS courses.
+    assert pipeline.retrieve(db, p) == []
+
+
+@pytest.mark.parametrize('message', [
+    'Something like CS50 but lighter',
+    'Alternatives to CS50 that are easier',
+])
+def test_comparative_modifiers_do_not_replace_the_reference_topic(message):
+    db = intro_database()
+    p = pipeline.plan(db, message, {})
+    assert p['subject'] == 'COMPSCI'
+    assert 'introduction' in ' '.join(p['queries'])
+    assert [c['code'] for c in pipeline.retrieve(db, p)] == ['COMPSCI 32']
+
+
+def test_multiple_references_still_allow_an_explicit_different_topic():
+    db = intro_database()
+    p = pipeline.plan(db, 'Find biology courses other than CS50 and CS32', {})
+    assert [c['code'] for c in pipeline.retrieve(db, p)] == ['BIO 1']
+
+
+def test_uninformative_reference_titles_request_a_topic_instead_of_browsing():
+    db = intro_database()
+    db.courses['COMPSCI 50']['title'] = 'Course'
+    db._build_index()
+    p = pipeline.plan(db, 'Alternatives to CS50', {})
+    assert p['clarifications']
+    assert pipeline.retrieve(db, p) == []
+
+
+@pytest.mark.parametrize('message', ['Find courses instead of CS50 in Spring 2027',
+                                   'More options like CS50 in Spring 2027'])
+def test_conversation_scaffolding_does_not_erase_reference_syntax(message):
+    db = intro_database()
+    p = pipeline.plan(db, message, {})
+    assert p['exclude'] == ['COMPSCI 50'] and not p['codes']
+    assert [c['code'] for c in pipeline.retrieve(db, p)] == ['COMPSCI 32']
+
+
+def test_reference_topic_and_review_scope_compose():
+    db = intro_database()
+    db.courses['COMPSCI 32']['offerings'] = [{'term': '2025 Fall'}]
+    p = pipeline.plan(db, 'Something like CS50 with Fall 2025 reviews in Spring 2027', {})
+    assert p['exclude'] == ['COMPSCI 50'] and p['subject'] == 'COMPSCI'
+    assert pipeline.effective_filters(p) == ({'q_term': '2025 Fall', 'subject': 'COMPSCI', 'term': '2027 Spring'}, [])
