@@ -15,6 +15,7 @@ import search_planner
 import search_constraints
 from schedule_constraints import extract_schedule, merge_schedule
 
+from catalog_constraints import extract_catalog, merge_catalog, with_catalog_constraints
 from courses import UPCOMING, GEN_EDS, EXTRA_Q_SCORES, tokenize
 from guardrails import MAX_PICKS, POLICY, SAFE_FAILURE, validate_answer, validate_pick
 
@@ -128,6 +129,10 @@ def plan(db, message, preferences, history=()):
     if asks:
         extracted["query"] = " ".join(asks)
 
+    extracted["query"], catalog_filters, catalog_issues = extract_catalog(extracted["query"])
+    extracted["clarifications"].extend(catalog_issues)
+
+    @with_catalog_constraints(catalog_filters)
     def finish(value):
         return {**value, "schedule_filters": merge_schedule(schedule_filters, value.get("schedule_filters")),
                 "numeric_filters": extracted["filters"], "term": extracted["term"],
@@ -257,6 +262,8 @@ def effective_filters(p, selected=None):
                              'Change your question or the selected filter so they agree.')
         else:
             filters[key] = value
+    filters, catalog_conflicts = merge_catalog(p.get("catalog_filters", {}), filters)
+    conflicts.extend(catalog_conflicts)
     if p["gen_ed"] and not filters.get("gen_ed"):
         filters["any_gen_ed"] = True
     requested = dict(p.get("numeric_filters", {}))
