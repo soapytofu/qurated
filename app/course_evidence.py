@@ -30,6 +30,19 @@ POLICY_CONFLICTS = {
     'optional_attendance': re.compile(r"\b(?:attendance\s+(?:(?:is|will be|remains)\s+)?(?:required|mandatory)|"
         r"(?:required|mandatory)\s+(?:attendance|(?:for\s+)?(?:lectures?|sections?|labs?)))\b", re.I),
 }
+BACKGROUND_SUBJECT = r'(?:math(?:ematics)?|calculus|programming|computer science|CS)'
+BACKGROUND_SUBJECTS = BACKGROUND_SUBJECT + r'(?:\s+(?:or|and)\s+' + BACKGROUND_SUBJECT + r')*'
+BACKGROUND_ABSENCE = re.compile(
+    r'\b(?:no|without)\s+(?:(?:prior|previous)\s+)?(?P<subjects>' + BACKGROUND_SUBJECTS + r')'
+    r'\s+(?:background|experience|knowledge|preparation|(?:is\s+)?(?:required|needed))\b|'
+    r'\b(?:requires?|needs?)\s+no\s+(?:prior\s+)?(?P<direct>' + BACKGROUND_SUBJECTS + r')\b|'
+    r'\b(?:no|without)\s+(?:formal\s+)?prerequisites?\b', re.I)
+SUBJECTIVE_EASE = re.compile(r'\beasy way to (?:fulfill|satisfy) (?:the )?QRD\b|\bminimal work\b', re.I)
+POOL_GENERALIZATION = re.compile(
+    r'\b(?:other Gen\s*Eds? exceed (?:the )?workload limit|'
+    r'few other Gen\s*Eds? meet (?:the )?(?:low )?workload (?:filter|limit))\b', re.I)
+BOUNDED_POOL = re.compile(r'\b(?:among (?:these|the (?:shown|returned)) (?:options|courses|results)|'
+    r'in (?:these|the shown) (?:options|results)|(?:in|from) this search|(?:shown|found) here)\b', re.I)
 
 
 def qualified_claim(clause, match):
@@ -61,6 +74,43 @@ def scoped_course(course, candidate=None):
     terms = set(candidate['q_terms'] or [])
     return {**course, 'comments': [comment for comment in course.get('comments', [])
                                   if comment.get('term') in terms]}
+
+
+def background_claims(text):
+    for match in BACKGROUND_ABSENCE.finditer(text):
+        if not affirmative_policy(text, match):
+            continue
+        subjects = match.group('subjects') or match.group('direct')
+        if not subjects:
+            yield {'prerequisites'}
+            continue
+        yield {'programming' if s.lower() in ('programming', 'computer science', 'cs') else
+               'math' if s.lower() in ('math', 'mathematics') else 'calculus'
+               for s in re.findall(BACKGROUND_SUBJECT, subjects, re.I)}
+
+
+def confirmed_background_absences(course):
+    official = catalog_text(course)
+    return {subject for sentence in re.split(r'[.!?;]', official)
+        for claim in background_claims(sentence) for subject in claim}
+
+
+def validate_reviewed_claims(sentence, course):
+    """Checks for the prerequisite and ease overstatements in the saved quality review."""
+    confirmed = confirmed_background_absences(course)
+    if any(not claim <= confirmed for claim in background_claims(sentence)):
+        raise ValueError('unverified prerequisite assurance')
+    for match in SUBJECTIVE_EASE.finditer(sentence):
+        if not affirmative_policy(sentence, match, allow_attribution=True):
+            continue
+        if not (ATTRIBUTED.search(sentence) and any(
+                re.search(re.escape(match.group()), c['text'], re.I) for c in course.get('comments', []))):
+            raise ValueError('unattributed ease or effort claim')
+
+
+def without_internal_jargon(text):
+    # The reviewed phrase is incidental implementation commentary, not a course fact.
+    return re.sub(r'\s*[,;]?\s*\bno Q data flags\b[.!]?', '', text, flags=re.I).strip()
 
 
 def policies_requested(message):
@@ -134,6 +184,7 @@ def evidence_summary(course):
     cat = course.get('catalog') or {}
     return {'catalog_terms_loaded': list(UPCOMING),
             'current_policies_confirmed': [k for k in POLICIES if supports_policies(course, [k])],
+            'catalog_confirmed_background_not_required': sorted(confirmed_background_absences(course)),
             'reviews_describe_past_offerings': True,
             'missing_reviews_do_not_establish_newness': True,
             'missing_offering_does_not_establish_nonoffering': True}
@@ -146,6 +197,13 @@ def validate_claims(text, courses):
     released just because their code is allowed or their accompanying quote is verbatim.
     """
     for sentence in re.split(r'(?<=[.!?])\s+', text):
+        if POOL_GENERALIZATION.search(sentence) and not BOUNDED_POOL.search(sentence):
+            raise ValueError('shortlist does not establish catalog-wide availability')
+        sentence_targets = [c for c in courses if re.search(
+            r'(?<![A-Za-z0-9])' + r'\s*'.join(re.escape(p) for p in c['code'].split()) +
+            r'(?![A-Za-z0-9])', sentence, re.I)] or courses
+        for course in sentence_targets:
+            validate_reviewed_claims(sentence, course)
         targets = courses
         for clause in CLAUSES.split(sentence):
             mentioned = [c for c in courses if re.search(
