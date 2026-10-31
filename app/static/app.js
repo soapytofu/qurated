@@ -64,6 +64,15 @@ const putJSON = (path, body) => checkedWrite(path, { method: "PUT", headers: { "
 const del = (path) => checkedWrite(path, { method: "DELETE" });
 const enc = encodeURIComponent;
 
+function chatRequestError(body, status) {
+  if (typeof body.detail === "string") return body.detail;
+  const fields = Array.isArray(body.detail) ? body.detail.map(error => error.loc?.[1]) : [];
+  if (status === 422 && fields.includes("message")) return "Please enter a question of at most 2,000 characters.";
+  if (status === 422 && fields.includes("session_id")) return "This conversation could not be resumed. Start a new chat and try again.";
+  if (status === 422 && fields.includes("filters")) return "Please check your filters and try again.";
+  return "Couldn't send your question. Please try again.";
+}
+
 // ---------- views: home (Apple-style landing) vs. conversation ----------
 function showHome() {
   document.body.classList.remove("chatting");
@@ -242,11 +251,12 @@ async function send(message) {
     const res = await api("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId, message, preferences: prefs, favorites: Object.keys(favorites), filters: activeFilters() }),
+      // Account preferences and favorites are read by the server, not supplied by the browser.
+      body: JSON.stringify({ session_id: sessionId, message, filters: activeFilters() }),
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      note("error", typeof body.detail === "string" ? body.detail : "Please enter a question of at most 2,000 characters.");
+      note("error", chatRequestError(body, res.status));
       return;
     }
     sessionId = res.headers.get("X-Session-Id") || sessionId;
