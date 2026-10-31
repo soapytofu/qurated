@@ -80,3 +80,23 @@ def test_q_rating_words_remain_metrics_not_course_format():
 
 def test_lecture_quality_is_not_misread_as_a_format_requirement():
     assert plan(catalog_db(), 'ethics courses with the best lectures', {})['catalog_filters'] == {}
+
+
+@pytest.mark.parametrize('quality', ['life changing', 'life-changing', 'thought provoking',
+                                    'thought-provoking', 'inspiring', 'transformative'])
+def test_qualitative_lecture_search_remains_searchable_without_known_format(quality):
+    text = f'{quality} lectures'
+    remaining, filters, issues = extract_catalog(text)
+    assert remaining == text and filters == {} and not issues
+    db = database()  # Catalog component is deliberately unknown.
+    db.courses['TEST 0']['comments'] = [{'term': '2026 Spring', 'text': f'The lectures were {quality}.'}]
+    db._build_index()
+    p = plan(db, text, {})
+    assert p['catalog_filters'] == {} and not p['clarifications']
+    assert [c['code'] for c in retrieve(db, p)] == ['TEST 0']
+
+
+def test_lecture_quality_does_not_remove_an_explicit_format_requirement():
+    remaining, filters, issues = extract_catalog('lecture courses with life-changing lectures')
+    assert filters == {'format': 'Lecture'} and not issues
+    assert 'life-changing lectures' in remaining

@@ -4,6 +4,8 @@ from courses import GEN_EDS
 
 QRD = re.compile(r'\b(?:(?:that\s+)?(?:also\s+)?(?:satisf(?:y|ies)|fulfill(?:s)?|meet(?:s)?|count(?:s)? toward)\s+)?(?:the\s+)?(?:QRD|quantitative reasoning with data)(?:\s+requirements?)?\b', re.I)
 FORMAT = re.compile(r'\b(?:seminars?|lectures?)(?:\s+(?:courses?|classes?))?\b', re.I)
+LECTURE_QUALITY = re.compile(r'\b(?:effective|great|good|best|engaging|clear|boring|'
+                             r'life[\s-]+changing|thought[\s-]+provoking|inspiring|transformative)\s*$', re.I)
 SMALL = re.compile(r'\bsmall\b(?=(?:\s+[\w-]+){0,3}\s+(?:classes?|courses?|seminars?)\b)|\bsmall\s+(?:classes?|courses?|seminars?)\b', re.I)
 NEGATION = re.compile(r"\b(?:no|not|never|except|excluding|avoid|without|don't want|do not want)"
                       r"(?:\s+(?:in|with|any|a|an|the|courses?|classes?|that|satisfy|fulfill)){0,5}\s*$", re.I)
@@ -40,9 +42,8 @@ def extract_catalog(message):
     remaining = QRD.sub(lambda m: recognized(m, 'qrd', True), message)
     remaining = SMALL.sub(small, remaining)
     def course_format(match):
-        if match.group().lower().startswith('lecture') and re.search(
-                r'\b(?:effective|great|good|best|engaging|clear|boring)\s*$', match.string[:match.start()], re.I):
-            return match.group()  # Lecture quality is a Q metric, not a course-format constraint.
+        if match.group().lower().startswith('lecture') and LECTURE_QUALITY.search(match.string[:match.start()]):
+            return match.group()  # Preserve lecture-quality searches and Q metrics.
         return recognized(match, 'format', 'Seminar' if match.group().lower().startswith('seminar') else 'Lecture')
     remaining = FORMAT.sub(course_format, remaining)
     return remaining, filters, list(dict.fromkeys(issues))
