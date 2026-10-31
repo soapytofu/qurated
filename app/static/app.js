@@ -367,7 +367,7 @@ function syncWorkload() {
 
 // ---------- sheets ----------
 let activeOverlay = null, overlayReturn = null, inertElements = [];
-const focusable = (root) => $$('button:not([disabled]), input, select, textarea, a[href], [tabindex="0"]', root)
+const focusable = (root) => $$('button:not([disabled]), input, select, textarea, a[href], summary, [tabindex="0"]', root)
   .filter(el => !el.hidden && el.getClientRects().length);
 function openOverlay(id, scrim = false) {
   const trigger = document.activeElement;
