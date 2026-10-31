@@ -406,6 +406,8 @@ function openOverlay(id, scrim = false) {
 }
 function openSheet(id) { openOverlay(id, true); }
 function closeAll(restore = true) {
+  overlayVersion++;
+  clearTimeout(feedbackCloseTimer); feedbackCloseTimer = null;
   ["#prefs", "#favs", "#detail", "#feedback", "#taken"].forEach(id => $(id).hidden = true);
   $("#scrim").hidden = true;
   inertElements.forEach(el => el.inert = false); inertElements = [];
@@ -756,6 +758,7 @@ api("/api/meta").then((r) => {
 });
 
 // ---------- feedback ----------
+let overlayVersion = 0, feedbackCloseTimer = null;
 const fbStatus = $("#fb-status");
 $("#open-feedback").addEventListener("click", () => {
   openOverlay("#feedback");
@@ -764,6 +767,8 @@ $("#open-feedback").addEventListener("click", () => {
 });
 $("#feedback-form").addEventListener("submit", async (e) => {
   e.preventDefault();
+  const version = overlayVersion;
+  const current = () => version === overlayVersion && activeOverlay === $("#feedback");
   const send = $("#fb-send");
   send.disabled = true;
   try {
@@ -778,13 +783,17 @@ $("#feedback-form").addEventListener("submit", async (e) => {
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.detail || "Couldn't send. Please try again.");
+    if (!current()) return;
     $("#fb-message").value = "";
     fbStatus.className = "fb-status";
     fbStatus.textContent = "Thanks! We read every message.";
     fbStatus.hidden = false;
-    setTimeout(closeAll, 1400);
+    feedbackCloseTimer = setTimeout(() => {
+      feedbackCloseTimer = null;
+      if (current()) closeAll();
+    }, 1400);
   } catch (err) {
-    if (err.message === "signed out") return;
+    if (err.message === "signed out" || !current()) return;
     fbStatus.className = "fb-status err";
     fbStatus.textContent = err.message;
     fbStatus.hidden = false;
