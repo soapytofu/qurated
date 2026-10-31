@@ -88,6 +88,35 @@ def test_historical_policy_attribution_still_requires_source_support():
                       allowed, [], db, lambda *a: None)
 
 
+@pytest.mark.parametrize('review,allowed', [
+    ('No exams may be missed; two midterms and a final are required.', False),
+    ('No exams may be missed.', False),
+    ('This course was not exam-free.', False),
+    ('It is not true that there were no exams.', False),
+    ('There were no exams.', True),
+])
+def test_historical_absence_claim_requires_affirmative_review_support(review, allowed):
+    db = database()
+    db.courses['TEST 0']['comments'] = [{'term': '2026 Spring', 'text': review}]
+    candidate = {'code': 'TEST 0', 'q_terms': ['2026 Spring']}
+    pick = {'code': 'TEST 0', 'reason': 'Past students reported no exams.', 'quote': ''}
+    for check in (
+        lambda: validate_pick(pick, {'TEST 0'}, [], db, lambda *a: None, [candidate]),
+        lambda: validate_answer({'picks': [], 'advice': pick['reason']}, [candidate], [], db, lambda *a: None),
+    ):
+        if allowed:
+            check()
+        else:
+            with pytest.raises(ValueError):
+                check()
+
+
+@pytest.mark.parametrize('text', ['This course is not exam-free.',
+                                 'It is not true that this course has no exams.'])
+def test_negated_output_is_not_an_affirmative_no_exams_claim(text):
+    validate_claims(text, [database().courses['TEST 0']])
+
+
 def test_no_picks_does_not_bypass_newness_validation():
     db = database()
     with pytest.raises(ValueError):

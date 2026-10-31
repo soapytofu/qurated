@@ -41,9 +41,9 @@ def qualified_claim(clause, match):
                 re.match(r"\s+(?:is|remains)\s+(?:unknown|not verified)\b", after, re.I))
 
 
-def affirmative_policy(clause, match):
+def affirmative_policy(clause, match, allow_attribution=False):
     before, after = clause[:match.start()], clause[match.end():]
-    return not (ATTRIBUTED.search(clause) or qualified_claim(clause, match) or
+    return not ((not allow_attribution and ATTRIBUTED.search(clause)) or qualified_claim(clause, match) or
                 NEGATED_PREFIX.search(before) or
                 re.search(r"\b(?:if|whether|might|could)\b", before, re.I) or
                 re.match(r"\s+(?:(?:may|can|must|should)\b|(?:are|is)\s+(?:optional|missed|skipped)\b)", after, re.I))
@@ -71,7 +71,11 @@ def policies_requested(message):
 
 
 def supports_policies(course, requested):
-    text = catalog_text(course)
+    return supports_policy_text(catalog_text(course), requested)
+
+
+def supports_policy_text(text, requested):
+    """Require an affirmative, uncontradicted policy in catalog or historical evidence."""
     clauses = re.split(r'[.!?;]', text)
     for key in requested:
         # A policy with an exception or an explicit opposite does not establish the
@@ -151,10 +155,12 @@ def validate_claims(text, courses):
             for course in targets:
                 official = catalog_text(course)
                 for policy, pattern in POLICIES.items():
-                    claims = [m for m in pattern.finditer(clause) if not qualified_claim(clause, m)]
+                    claims = [m for m in pattern.finditer(clause)
+                              if affirmative_policy(clause, m, allow_attribution=True)]
                     if claims and not supports_policies(course, [policy]):
                         past_support = ATTRIBUTED.search(clause) and any(
-                            pattern.search(comment['text']) for comment in course.get('comments', []))
+                            supports_policy_text(comment['text'], [policy])
+                            for comment in course.get('comments', []))
                         if not past_support:
                             raise ValueError('unverified current assessment or attendance policy')
                 if any(not qualified_claim(clause, m) for m in NEW.finditer(clause)) and not NEW.search(official):
