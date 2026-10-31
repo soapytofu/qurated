@@ -270,3 +270,26 @@ def test_pending_course_confirmation_preserves_requested_term_and_limit():
     corrected = pipeline.plan(db, 'CS1240', {}, [], state)
     assert corrected['codes'] == ['COMPSCI 1240'] and not corrected['code_suggestions']
     assert corrected['term'] == '2027 Spring' and corrected['numeric_filters']['workload_under'] == 8
+
+
+@pytest.mark.parametrize('transport_error', [False, True])
+def test_visible_streamed_cards_remain_in_context_when_answer_fails(chat, monkeypatch, transport_error):
+    db, ask, captured = chat
+    normal_stream = pipeline.hedged_stream
+    def interrupted(client, kwargs):
+        yield 'text', json.dumps({'picks': [{'code': 'TEST 0', 'reason': 'Fits.', 'quote': ''}]})
+        if transport_error:
+            raise RuntimeError('synthetic connection interruption')
+        yield 'final', SimpleNamespace(stop_reason='max_tokens', usage=SimpleNamespace(
+            input_tokens=0, output_tokens=0, cache_read_input_tokens=0, cache_creation_input_tokens=0))
+    monkeypatch.setattr(pipeline, 'hedged_stream', interrupted)
+    if transport_error:
+        with pytest.raises(RuntimeError, match='synthetic connection interruption'):
+            ask(BASE)
+    else:
+        events, state = ask(BASE)
+        assert cards(events) and any(e['type'] == 'error' for e in events)
+    monkeypatch.setattr(pipeline, 'hedged_stream', normal_stream)
+    events, state = ask('Show me more options')
+    assert cards(events) and 'TEST 0' not in {c['code'] for c in cards(events)}
+    assert 'TEST 0' in state['last']['shown']

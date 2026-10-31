@@ -526,6 +526,10 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
                     yield sse({"type": "card", "card": {**card, "reason": pick["reason"], "quote": pick["quote"]}})
     finally:
         stream.close()
+        # Validated cards are already visible, even when transport or later advice fails.
+        # Keep their identities and discussion pool so a retry/more cannot recycle them.
+        if p and shown:
+            conversation_context.remember_result(state, p, cands, shown, filters or {}, [])
     if final is None or final.stop_reason != "end_turn":
         yield sse({"type": "error", "text": SAFE_FAILURE})
         return planner_cost + (_cost(final.usage) if final else 0), time.perf_counter() - t0
