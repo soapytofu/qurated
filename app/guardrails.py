@@ -2,6 +2,7 @@
 import re
 
 import guard
+from course_evidence import scoped_course, validate_claims, without_internal_jargon
 
 POLICY = """
 Safety and trust rules (apply to every reply):
@@ -18,6 +19,12 @@ Safety and trust rules (apply to every reply):
   direct students to their adviser or official catalog for consequential enrollment decisions.
 - If no_q_data is true, explicitly say no Q Guide reviews are available in the loaded data.
   Missing reviews do not prove that a course is new; never infer newness or a reason for missing data.
+- A catalog statement about no programming experience does not establish no math or calculus background.
+  Make no-prerequisite assurances only for subjects explicitly supported by the catalog.
+- Attribute subjective ease or minimal-work opinions to the historical students who expressed them.
+  Prefer the reported workload over promising an easy way to fulfill QRD or minimal work.
+- Search results are a shortlist, not an exhaustive census. Bound claims about other matching courses
+  to the options found in this search. Do not expose internal phrases such as "no Q data flags".
 - Do not guarantee grades, admission, enrollment or requirement credit. Explain missing evidence.
 - If someone expresses immediate danger or self-harm, respond with brief empathy and encourage
   immediate help from local emergency services or a trusted person. Do not invent phone numbers.
@@ -43,13 +50,14 @@ MAX_PICKS = 6
 OPTIONAL_KEYS = {'options', 'remember'}
 
 
-def validate_pick(pick, allowed, taken, db, verify_quote):
+def validate_pick(pick, allowed, taken, db, verify_quote, candidates=None):
     """Check one pick on its own, so a valid card can be shown while the rest of the answer streams."""
     if not isinstance(pick, dict) or set(pick) != {'code', 'reason', 'quote'}:
         raise ValueError('invalid pick')
     if any(not isinstance(v, str) for v in pick.values()):
         raise ValueError('invalid pick values')
     code, reason, quote = pick['code'], pick['reason'], pick['quote']
+    reason = without_internal_jargon(reason)
     resolved = db.lookup(code)
     if resolved:
         code = resolved['code']
@@ -58,12 +66,14 @@ def validate_pick(pick, allowed, taken, db, verify_quote):
                        if db.identity_keys(code) & db.identity_keys(candidate)]
         if len(equivalents) == 1:
             code = equivalents[0]
-    if code not in allowed or db.is_taken(code, taken):
+    if resolved is None or code not in allowed or db.is_taken(code, taken):
         raise ValueError('unsupported course')
     if not reason.strip() or len(reason) > 600 or len(quote) > 300:
         raise ValueError('invalid course text')
     if has_sensitive_text(reason) or guard.leaked(reason):
         raise ValueError('sensitive output')
+    candidate = next((c for c in candidates or [] if c['code'] == code), None)
+    validate_claims(reason, [scoped_course(resolved, candidate)])
     return dict(code=code, reason=reason, quote=verify_quote(code, quote))
 
 
@@ -74,6 +84,9 @@ def validate_answer(value, candidates, taken, db, verify_quote):
     advice, picks = value['advice'], value['picks']
     if not isinstance(advice, str) or not advice.strip() or len(advice) > 1500:
         raise ValueError('invalid advice')
+    advice = without_internal_jargon(advice)
+    if not advice:
+        raise ValueError('invalid advice')
     if not isinstance(picks, list) or len(picks) > MAX_PICKS:
         raise ValueError('invalid picks')
     for key in OPTIONAL_KEYS & set(value):
@@ -82,7 +95,7 @@ def validate_answer(value, candidates, taken, db, verify_quote):
     allowed = {c['code'] for c in candidates}
     seen, validated = set(), []
     for pick in picks:
-        pick = validate_pick(pick, allowed, taken, db, verify_quote)
+        pick = validate_pick(pick, allowed, taken, db, verify_quote, candidates)
         aliases = db.identity_keys(pick['code'])
         if seen & aliases:
             continue
@@ -91,4 +104,6 @@ def validate_answer(value, candidates, taken, db, verify_quote):
     text = advice + ' '.join(p['reason'] + (p['quote'] or '') for p in validated)
     if has_sensitive_text(text) or guard.leaked(advice):
         raise ValueError('sensitive output')
+    validate_claims(advice, [scoped_course(c, candidate) for candidate in candidates
+                             if (c := db.lookup(candidate['code']))])
     return validated, advice.strip()

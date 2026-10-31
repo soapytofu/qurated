@@ -17,6 +17,8 @@ from schedule_constraints import extract_schedule, merge_schedule
 import conversation_context
 import review_constraints
 import reference_courses
+from accessibility_evidence import label_instructor_availability
+import course_evidence
 
 from catalog_constraints import extract_catalog, merge_catalog, with_catalog_constraints
 from courses import UPCOMING, GEN_EDS, EXTRA_Q_SCORES, tokenize
@@ -124,6 +126,7 @@ def just_asked(history, state=None):
 
 def _request_plan(db, message, preferences):
     """Extract deterministic constraints before optional semantic query expansion."""
+    original_message = message
     review = review_constraints.extract(message, db)
     message = review["message"]
     reference = reference_courses.resolve(db, message, CODE_RE)
@@ -153,7 +156,8 @@ def _request_plan(db, message, preferences):
         return {**value, "schedule_filters": merge_schedule(schedule_filters, value.get("schedule_filters")),
                 "numeric_filters": extracted["filters"], "term": extracted["term"],
                 "review_filters": review["filters"],
-                "clarifications": extracted["clarifications"] + review["clarifications"]}
+                "clarifications": extracted["clarifications"] + review["clarifications"],
+                "required_policies": course_evidence.policies_requested(original_message)}
 
     m = message.lower()
     normalized = re.sub(r"[^a-z0-9]+", " ", m.replace("&", "and")).strip()
@@ -302,6 +306,10 @@ def retrieve(db, p, taken=frozenset(), k=10, filters=None):
                     continue
                 if b["code"] in seen:
                     continue
+                course = db.lookup(b["code"]) or {}
+                if (course_evidence.only_hypothetical_support(course, p["queries"])
+                        or not course_evidence.supports_policies(course, p.get("required_policies", []))):
+                    continue
                 if p["term"] in UPCOMING and not (isinstance(b["offered"], list) and p["term"] in b["offered"]):
                     continue  # student asked about a specific term; skip courses not offered then
                 cross = set((db.lookup(b["code"]) or {}).get("also_listed_as", []))
@@ -319,7 +327,8 @@ def retrieve(db, p, taken=frozenset(), k=10, filters=None):
         # (many are open to undergrads), ranked after every undergrad match. Every other filter still applies.
         collect(search_all({**filters, "include_grad": True}, undergrad=False))
     explicit = [db.brief(c["code"], filters=filters) for code in p["codes"][:6]
-                if (c := db.filtered_lookup(code, filters, taken))]
+                if (c := db.filtered_lookup(code, filters, taken))
+                and course_evidence.supports_policies(c, p.get("required_policies", []))]
     explicit_codes = {b["code"] for b in explicit}
     cands, identities = [], set()
     for candidate in explicit + out:
@@ -343,6 +352,7 @@ def retrieve(db, p, taken=frozenset(), k=10, filters=None):
                          **({"graduate_level": True} if grad else {}),
                          "description": (cat.get("description") or "")[:180] or None,
                          "offered_sections": offered,
+                         "evidence_limits": course_evidence.evidence_summary(db.lookup(b["code"]) or {}),
                          "student_comments": [x[:200] for x in d.get("comments", [])[:n_comments]]})
     return enriched
 
@@ -448,6 +458,27 @@ def _system(extra=""):
     return blocks + ([{"type": "text", "text": extra}] if extra else [])
 
 
+def empty_result_reply(db, p, message, taken):
+    named = p.get("codes", [])
+    if named and all(db.is_taken(code, taken) for code in named):
+        return (", ".join(named) + (" is" if len(named) == 1 else " are") +
+                " marked as taken in your saved courses, so I excluded " + ("it" if len(named) == 1 else "them") +
+                " from recommendations. You can change this in Courses I've taken, or ask for alternatives.")
+    non_code_prefixes = {'spring', 'summer', 'fall', 'autumn', 'winter', 'under', 'over', 'above',
+                         'below', 'than', 'least', 'most', 'before', 'after', 'at', 'year', 'rated'}
+    unknown = [m.group().upper() for m in CODE_RE.finditer(message)
+               if re.match(r"[A-Z][A-Z-]+\s?\d", m.group(), re.I)
+               and re.match(r'[A-Za-z-]+', m.group()).group().lower() not in non_code_prefixes
+               and not db.lookup(m.group())]
+    if unknown:
+        return ("I couldn't find " + ", ".join(dict.fromkeys(unknown)) +
+                " in the loaded catalog. Check the course code, try its title, or use Browse courses to find it.")
+    if p.get("required_policies"):
+        return course_evidence.policy_limit_reply(p["required_policies"])
+    return ("I couldn't find matching courses in the loaded catalog. Try changing your filters or search terms; "
+            "this does not mean no such courses exist.")
+
+
 def stream_answer(client, db, history, message, preferences, favorites, taken, search, sse, card_for, verify_quote,
                   filters=None, state=None):
     """Validate model output before emitting it. `state` holds per-chat memory: remembered facts and the
@@ -497,7 +528,8 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
               f"category={p.get('gen_ed_category') or 'any'}", flush=True)
         if not cands:
             conversation_context.pending_result(state, "no_results")
-            yield sse({"type": "text", "delta": "I couldn't find matching courses in the loaded catalog. Try changing your filters or search terms; this does not mean no such courses exist."})
+            reply = empty_result_reply(db, p, message, taken)
+            yield sse({"type": "text", "delta": reply})
             return planner_cost, time.perf_counter() - t0
     yield sse({"type": "status", "text": "Preparing a grounded answer"})
     # Structured data keeps source text separate from trusted system instructions.
@@ -538,7 +570,7 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
                     continue
                 try:
                     code, reason, quote = (json.loads(f'"{g}"') for g in m.groups())
-                    pick = validate_pick(dict(code=code, reason=reason, quote=quote), allowed, taken, db, verify_quote)
+                    pick = validate_pick(dict(code=code, reason=reason, quote=quote), allowed, taken, db, verify_quote, cands)
                 except ValueError:
                     continue  # the full validation below rejects the answer
                 keys = db.identity_keys(pick["code"])
@@ -591,7 +623,7 @@ def _for_model(cands, message, filters):
     """Candidates as the model sees them; the cards the student sees keep every field."""
     keep_scores = SCORE_WORDS.search(message) or any("min_" + f in (filters or {}) for f, *_ in EXTRA_Q_SCORES)
     drop = {"latest_term"} | (set() if keep_scores else {f for f, *_ in EXTRA_Q_SCORES})
-    return [{k: v for k, v in c.items() if k not in drop} for c in cands]
+    return [label_instructor_availability({k: v for k, v in c.items() if k not in drop}) for c in cands]
 
 
 def more_like(db, state, taken, n=6):
