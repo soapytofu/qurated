@@ -16,9 +16,12 @@ jobs:
       - run: python -m pip install uv==0.13.4
       - run: uv sync --project app --locked
       - run: app/.venv/bin/python -m pytest tests -q
-      - run: node --check app/static/app.js
+      - run: |
+          for source in app/static/*.js; do
+            node --check "$source" || exit
+          done
       - run: node --test tests/frontend.test.cjs
       - run: app/.venv/bin/python -m playwright install --with-deps chromium
-      - run: app/.venv/bin/python -m pytest tests/test_ui.py -q
+      - run: app/.venv/bin/python -m pytest tests/test_ui*.py -q
         env:
           RUN_BROWSER_TESTS: '1'
