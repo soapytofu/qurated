@@ -1,10 +1,10 @@
 """Conservative parsing of explicit search constraints; no model calls or guessed years."""
 import re
 
+from term_constraints import extract_terms
+
 from courses import UPCOMING, EXTRA_Q_SCORES
 
-TERM = re.compile(r"\b(?:(?P<season>spring|fall|autumn)(?:\s+(?:of\s+)?(?P<year>20\d{2}))?"
-                  r"|(?P<year_first>20\d{2})\s+(?P<season_second>spring|fall|autumn))\b", re.I)
 WORKLOAD = re.compile(r"\b(?:workload\s+(?:of\s+)?)?"
                       r"(?P<op>under|less than|below|at most|no more than|up to|maximum(?: of)?|max(?: of)?)"
                       r"\s+(?P<value>[+-]?\d+(?:\.\d+)?)\s*(?:hours?|hrs?)"
@@ -30,23 +30,9 @@ def negated(match):
                           r"(?:\s+(?:in|during|for|with))?\s*$", match.string[:match.start()], re.I))
 
 
-def extract(message):
+def extract(message, today=None):
     """Return remaining topic text, exact numerical filters, term and clarification messages."""
-    terms, filters, clarifications = [], {}, []
-
-    def term(match):
-        if negated(match):
-            clarifications.append('Please state the term or numerical limit you want, rather than a negated constraint. You can also use Filters.')
-            return ' '
-        season = (match['season'] or match['season_second']).title().replace('Autumn', 'Fall')
-        year = match['year'] or match['year_first']
-        value = f'{year} {season}' if year else next((t for t in UPCOMING if t.endswith(season)), None)
-        if value not in UPCOMING:
-            clarifications.append(f'I only have upcoming catalog schedules for {" and ".join(UPCOMING)}; '
-                                  f'I cannot confirm offerings for {value or season}. Please choose a loaded term.')
-        elif value not in terms:
-            terms.append(value)
-        return ' '
+    filters, clarifications = {}, []
 
     def workload(match):
         if negated(match):
@@ -72,11 +58,10 @@ def extract(message):
         filters[key] = max(filters.get(key, value), value)
         return ' '
 
-    remaining = TERM.sub(term, message)
+    remaining, chosen_term, term_issues = extract_terms(message, today=today)
+    clarifications.extend(term_issues)
     remaining = WORKLOAD.sub(workload, remaining)
     remaining = SCORE.sub(score, remaining)
     remaining = SCORE_PLUS.sub(score, remaining)
-    if len(terms) > 1:
-        clarifications.append('Please choose one term per search: ' + ' or '.join(terms) + '.')
-    return {'query': remaining, 'filters': filters, 'term': terms[0] if len(terms) == 1 else 'any',
+    return {'query': remaining, 'filters': filters, 'term': chosen_term,
             'clarifications': list(dict.fromkeys(clarifications))}
