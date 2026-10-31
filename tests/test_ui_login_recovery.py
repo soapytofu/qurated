@@ -63,3 +63,58 @@ def test_credential_failure_has_visible_retry_and_can_succeed(page, failure):
     page.get_by_role("button", name="Retry sign-in").click()
     page.get_by_role("button", name="Continue with Google").click()
     expect(page).to_have_url(page.url.split("static/")[0])
+
+
+@pytest.mark.parametrize("endpoint", ["config", "google"])
+def test_response_body_timeout_recovers_and_can_retry(page, endpoint):
+    from playwright.sync_api import expect
+    setup(page)
+    page.clock.install()
+    page.add_init_script("""(() => {
+      const original = window.fetch;
+      window.stallBody = true;
+      window.fetch = async (url, options = {}) => {
+        if (window.stallBody && String(url).endsWith('/api/auth/ENDPOINT')) {
+          return {ok: ENDPOINT_OK, json: () => new Promise((resolve, reject) => {
+            window.bodyReadStarted = true;
+            options.signal.addEventListener('abort', () => reject(new DOMException('Timed out', 'AbortError')));
+          })};
+        }
+        return original(url, options);
+      };
+    })();""".replace('ENDPOINT_OK', 'true' if endpoint == 'config' else 'false').replace('ENDPOINT', endpoint))
+    page.goto(page.url + "static/login.html")
+    if endpoint == "google":
+        page.get_by_role("button", name="Continue with Google").click()
+    page.wait_for_function("window.bodyReadStarted === true")
+    page.clock.fast_forward(15001)
+    expect(page.locator("#login-error")).to_be_visible()
+    expect(page.get_by_role("button", name="Retry sign-in")).to_be_visible()
+    page.evaluate("window.stallBody = false")
+    page.get_by_role("button", name="Retry sign-in").click()
+    expect(page.get_by_role("button", name="Continue with Google")).to_be_visible()
+    expect(page.locator("#login-error")).not_to_be_visible()
+
+
+def test_stale_credential_body_cannot_override_a_new_attempt(page):
+    from playwright.sync_api import expect
+    setup(page)
+    page.add_init_script("""(() => {
+      const original = window.fetch;
+      window.fetch = async (url, options = {}) => {
+        if (String(url).endsWith('/api/auth/google')) {
+          return {ok: false, json: () => new Promise(resolve => {
+            window.finishOldBody = () => resolve({detail: 'Stale rejection'});
+          })};
+        }
+        return original(url, options);
+      };
+    })();""")
+    page.goto(page.url + "static/login.html")
+    page.get_by_role("button", name="Continue with Google").click()
+    page.wait_for_function("typeof window.finishOldBody === 'function'")
+    page.evaluate("init()")
+    expect(page.get_by_role("button", name="Continue with Google")).to_be_visible()
+    page.evaluate("window.finishOldBody()")
+    expect(page.locator("#login-error")).not_to_be_visible()
+    expect(page.locator("#login-status")).to_have_text("")

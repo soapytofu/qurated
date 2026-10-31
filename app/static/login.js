@@ -16,7 +16,13 @@ async function request(url, options = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    // fetch resolves at the response headers; keep the deadline through body consumption.
+    const body = await response.json().catch(err => {
+      if (controller.signal.aborted) throw err;
+      return {};
+    });
+    return { ok: response.ok, body };
   } finally { clearTimeout(timer); }
 }
 
@@ -55,7 +61,7 @@ async function onCredential(response, version) {
     });
     if (version !== generation) return;
     if (result.ok) { location.replace("/"); return; }
-    const body = await result.json().catch(() => ({}));
+    const body = result.body || {};
     showError(typeof body.detail === "string" ? body.detail : "Sign-in failed. Please try again.");
   } catch {
     if (version === generation) showError("Couldn't reach sign-in. Check your connection and try again.");
@@ -71,9 +77,9 @@ async function init() {
   try {
     const result = await request("/api/auth/config");
     if (!result.ok) throw new Error("Configuration unavailable");
-    const config = await result.json();
+    const config = result.body;
     if (version !== generation) return;
-    if (!config.google_client_id || !Array.isArray(config.allowed_domains) ||
+    if (!config || typeof config !== "object" || !config.google_client_id || !Array.isArray(config.allowed_domains) ||
         !config.allowed_domains.length || config.allowed_domains.some(d => typeof d !== "string" || !d)) {
       showError("Sign-in is temporarily unavailable. Please try again later.");
       return;
