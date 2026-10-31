@@ -65,7 +65,17 @@ const del = (path) => checkedWrite(path, { method: "DELETE" });
 const enc = encodeURIComponent;
 
 // ---------- views: home (Apple-style landing) vs. conversation ----------
+let browseGeneration = 0;
+const browseStates = new Map(), browseControllers = new Set();
+function cancelBrowseWork() {
+  browseGeneration++;
+  browseControllers.forEach(controller => controller.abort());
+  browseControllers.clear();
+  for (const [block] of browseStates) if (!block || !block.isConnected) browseStates.delete(block);
+  $("#f-show").disabled = false;
+}
 function showHome() {
+  cancelBrowseWork();
   document.body.classList.remove("chatting");
   document.body.classList.add("home");
   $(".hero").appendChild($("#composer-wrap"));
@@ -165,6 +175,7 @@ async function toggleTaken(code, title) {
   renderTaken();
   try {
     await (on ? putJSON(`/api/account/taken/${enc(code)}`) : del(`/api/account/taken/${enc(code)}`));
+    refreshBrowseResults();
   } catch (err) {
     if (on) taken.delete(code); else taken.set(code, previous);
     syncCardButtons(code); renderTaken(); saveError(err);
@@ -223,6 +234,7 @@ function makeProgress(bot) {
 async function send(message) {
   message = message.trim();
   if (!message || busy) return;
+  cancelBrowseWork();
   busy = true;
   $("#ask").disabled = true;
   $("#new-chat").disabled = true;
@@ -759,8 +771,8 @@ function renderFilterControls() {
   filterSummary();
 }
 let countTimer = null, countVersion = 0;
-async function browseRequest(state) {
-  const response = await api("/api/browse", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(state) });
+async function browseRequest(state, signal) {
+  const response = await api("/api/browse", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(state), signal });
   if (!response.ok) throw new Error("Couldn't load courses. Please try again.");
   return response.json();
 }
@@ -819,45 +831,84 @@ $("#f-close").addEventListener("click", () => toggleFilters(false));
 const SORTS = [["rating", "Best rated"], ["workload", "Lightest workload"], ["recommend", "Most recommended"], ["reviews", "Most reviewed"], ["relevance", "Keyword match"]];
 async function showResults(append = null) {
   const query = $("#f-query").value.trim();
-  const state = append || { sort:query ? "relevance" : "rating", offset:0, query, filters:activeFilters() };
+  const state = { ...(append || { sort:query ? "relevance" : "rating", offset:0, query, filters:activeFilters() }) };
   let block = append?.block;
-  if (block?.dataset.loading === "true") return;
-  if (block) { block.dataset.loading = "true"; $(".more", block).disabled = true; }
+  if (block?.dataset.loading === "true" && !state.refresh) return;
+  const previous = browseStates.get(block || null);
+  previous?.controller.abort();
+  state.controller = new AbortController();
+  state.generation = browseGeneration;
+  browseControllers.add(state.controller);
+  browseStates.set(block || null, state);
+  const current = () => state.generation === browseGeneration && browseStates.get(block || null) === state && (!block || block.isConnected);
+  if (block) {
+    block.dataset.loading = "true";
+    $(".more", block).disabled = true;
+    $("select", block).disabled = true;
+  }
   $("#f-show").disabled = true;
   try {
-    const res = await browseRequest({ filters:state.filters, query:state.query, sort:state.sort, offset:state.offset });
+    const res = await browseRequest({ filters:state.filters, query:state.query, sort:state.sort, offset:state.offset }, state.controller.signal);
+    if (!current()) return null;
     if (!block) {
       showChat(); block = addTurn("bot results");
+      browseStates.delete(null);
+      browseStates.set(block, state);
+      state.block = block;
       block.innerHTML = `<div class="results-head"><h2>${res.total.toLocaleString()} matching course${res.total === 1 ? "" : "s"}</h2>
         <select aria-label="Sort">${SORTS.filter(([k]) => k !== "relevance" || state.query).map(([k,l]) => `<option value="${k}"${k === state.sort ? " selected" : ""}>${l}</option>`).join("")}</select></div>
         <p class="results-sub">${esc(describeFilters(state))}</p><div class="cards"></div><button class="pill pill-soft more" hidden>Show more</button><p class="hint result-status" role="status"></p>`;
-      if (!res.total) $(".result-status", block).textContent = "No courses match. Open Filters to remove a constraint or try different keywords.";
-      $("select", block).addEventListener("change", async e => {
-        const select = e.target; select.disabled = true;
-        const next = await showResults({ ...state, sort:select.value, offset:0, block:null });
-        if (next) block.remove(); else select.value = state.sort;
-        select.disabled = false;
-      });
     }
+    $("h2", block).textContent = `${res.total.toLocaleString()} matching course${res.total === 1 ? "" : "s"}`;
+    $(".result-status", block).textContent = res.total ? "" : "No courses match. Open Filters to remove a constraint or try different keywords.";
+    const select = $("select", block);
+    select.value = state.sort;
+    select.onchange = () => showResults({ ...state, sort:select.value, offset:0, block, refresh:true });
     const grid = $(".cards", block), tmp = document.createElement("div");
+    if (state.refresh) grid.replaceChildren();
     tmp.innerHTML = res.cards.map(cardHTML).join(""); bindCards(tmp, res.cards);
     while (tmp.firstElementChild) grid.appendChild(tmp.firstElementChild);
     const more = $(".more", block), shown = state.offset + res.cards.length;
     more.hidden = shown >= res.total;
-    more.onclick = () => showResults({ ...state, offset:shown, block });
+    more.textContent = "Show more";
+    more.onclick = () => showResults({ ...state, offset:shown, block, refresh:false });
     if (!append) block.scrollIntoView({ behavior:"smooth", block:"start" });
     $("#browse-status").textContent = "";
     return block;
   } catch (err) {
+    if (!current() || err.name === "AbortError") return null;
     const message = "Couldn't load courses. Your results are still here; try again.";
-    if (block) $(".result-status", block).textContent = message;
+    if (block) {
+      $(".result-status", block).textContent = message;
+      if (state.refresh) {
+        const retry = $(".more", block);
+        retry.hidden = false; retry.textContent = "Retry results";
+        retry.onclick = () => showResults({ ...state, offset:0, refresh:true });
+      }
+      $("select", block).value = previous?.sort || state.sort;
+    }
     if (fPanel.hidden) { fPanel.hidden = false; document.body.classList.add("filters-open"); $("#open-filters").setAttribute("aria-expanded", "true"); }
     $("#browse-status").textContent = message;
     return null;
   } finally {
-    if (block) { block.dataset.loading = "false"; $(".more", block).disabled = false; }
-    $("#f-show").disabled = false;
+    browseControllers.delete(state.controller);
+    if (browseStates.get(block || null) === state) {
+      if (block) { block.dataset.loading = "false"; $(".more", block).disabled = false; $("select", block).disabled = false; }
+      else browseStates.delete(null);
+      $("#f-show").disabled = false;
+    }
   }
+}
+
+function refreshBrowseResults() {
+  for (const [block, state] of [...browseStates]) {
+    if (block ? !block.isConnected : state.generation !== browseGeneration) {
+      browseStates.delete(block); continue;
+    }
+    // The server excludes taken courses, so an old numeric offset is no longer valid.
+    showResults({ ...state, offset:0, block, refresh:true });
+  }
+  if (!fPanel.hidden) filtersChanged();
 }
 
 function describeFilters(state) {
@@ -925,18 +976,40 @@ function addFollowUps(turnEl) {
 }
 // Next matches for the same search, straight from the index: instant and no AI cost.
 async function showMore(turnEl, btn) {
+  const generation = browseGeneration, requestSession = sessionId;
   btn.disabled = true;
   btn.textContent = "Loading…";
-  const r = await api("/api/more", { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId }) }).then((x) => (x.ok ? x.json() : null)).catch(() => null);
-  const grid = $(".cards", turnEl);
-  if (!r?.cards?.length || !grid) { btn.textContent = "No more matches"; return; }
-  const tmp = document.createElement("div");
-  tmp.innerHTML = r.cards.map(cardHTML).join("");
-  bindCards(tmp, r.cards);
-  [...tmp.children].forEach((el) => grid.appendChild(el));
-  btn.disabled = false;
-  btn.textContent = "Show more like these";
+  let status = $(".more-status", turnEl);
+  if (!status) {
+    status = document.createElement("p"); status.className = "hint more-status";
+    status.setAttribute("role", "status"); turnEl.appendChild(status);
+  }
+  status.textContent = "";
+  const current = () => generation === browseGeneration && requestSession === sessionId && turnEl.isConnected;
+  try {
+    const response = await api("/api/more", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: requestSession }) });
+    if (!response.ok) throw new Error("more failed");
+    const r = await response.json();
+    if (!current()) return;
+    const grid = $(".cards", turnEl);
+    if (!grid) return;
+    if (!r.cards?.length) { btn.textContent = "No more matches"; return; }
+    const shown = new Set($$(".card", turnEl).map(card => card.dataset.code));
+    const cards = r.cards.filter(card => !shown.has(card.code) && !taken.has(card.code));
+    const tmp = document.createElement("div");
+    tmp.innerHTML = cards.map(cardHTML).join("");
+    bindCards(tmp, cards);
+    [...tmp.children].forEach(el => grid.appendChild(el));
+    btn.disabled = false;
+    btn.textContent = "Show more like these";
+  } catch (err) {
+    if (!current()) return;
+    status.textContent = "Couldn't load more courses. Please try again.";
+    btn.disabled = false; btn.textContent = "Retry more courses";
+  } finally {
+    if (!current() && turnEl.isConnected) { btn.disabled = false; btn.textContent = "Show more like these"; }
+  }
 }
 new MutationObserver(() => {
   if (busy) return;
