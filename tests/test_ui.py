@@ -87,7 +87,7 @@ def test_mobile_guide_and_filters_fit_viewport(page):
     Path('/tmp/qurated-playtest').mkdir(exist_ok=True)
     page.screenshot(path='/tmp/qurated-playtest/mobile-guide.png')
     page.keyboard.press('Escape')
-    page.locator('#open-filters').click()
+    page.get_by_role('button', name='Filters', exact=True).click()
     expect(page.locator('#filters')).to_be_visible()
     page.keyboard.press('Escape')
     expect(page.locator('#filters')).not_to_be_visible()
