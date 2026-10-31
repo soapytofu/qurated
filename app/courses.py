@@ -34,6 +34,16 @@ EXTRA_Q_SCORES = (
 )
 
 
+# Every numeric metric displayed from an individual Q report can order browse results.
+Q_SORT_FIELDS = {
+    "overall": "course_overall", "workload": "workload_hrs_mean", "recommend": "recommend_mean",
+    "instructor": "instructor_score", "lectures": "effective_lectures",
+    "reviews": "responded", "invited": "invited",
+    **{field: field for field, *_ in EXTRA_Q_SCORES},
+}
+BROWSE_SORTS = frozenset(Q_SORT_FIELDS) | {"rating", "relevance", "code"}
+
+
 def additional_scores(qreport):
     scores = {}
     for field, _, section, prefix in EXTRA_Q_SCORES:
@@ -257,8 +267,26 @@ class CourseDB:
         return score
 
     @staticmethod
-    def _q(c):
-        return c["offerings"][0] if c["offerings"] else NO_Q
+    def _q(c, q_term=None):
+        """Arithmetic mean of each available report metric in the selected Q scope.
+
+        Each report contributes once, including multiple sections in a term. Missing
+        values are omitted per metric rather than treated as zero or borrowed from
+        another term. This is a mean of report means, not a pooled student mean.
+        """
+        reports = [o for o in c["offerings"] if not q_term or o.get("term") == q_term]
+        result = dict(NO_Q)
+        for field in {*Q_SORT_FIELDS.values(), "course_overall_fas_avg"}:
+            values = [o.get(field) for o in reports]
+            values = [v for v in values if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)]
+            result[field] = sum(values) / len(values) if values else None
+        terms = sorted({o["term"] for o in reports if o.get("term")}, key=term_rank)
+        result.update(term=q_term or (terms[0] if len(terms) == 1 else "All terms"),
+                      report_count=len(reports), terms=terms)
+        return result
+
+    def q_terms(self):
+        return sorted({o["term"] for c in self.courses.values() for o in c["offerings"] if o.get("term")}, key=term_rank, reverse=True)
 
     @staticmethod
     def _next(c, filters=None):
@@ -319,7 +347,9 @@ class CourseDB:
     def matches(self, c, f):
         f = f or {}
         cat = c.get("catalog") or {}
-        o = self._q(c)
+        o = self._q(c, f.get("q_term"))
+        if f.get("q_term") and not o["report_count"]:
+            return False
         if not self.is_class(c) or (not f.get("include_grad") and self.is_grad_level(c)):
             return False
         term = f.get("term")
@@ -374,7 +404,7 @@ class CourseDB:
         return all(not (set(m["days"]) & avoid) and
                    (not earliest or (start_minutes(m.get("time")) or 0) >= earliest) for m in meetings)
 
-    def browse(self, f=None, query="", sort="rating", offset=0, limit=24, exclude=frozenset()):
+    def browse(self, f=None, query="", sort="overall", offset=0, limit=24, exclude=frozenset(), direction=None):
         """Direct search, no LLM: every course matching the filters, ranked by `sort` (or by keyword relevance)."""
         # A complete known code/alias is an exact lookup, not a fuzzy keyword query.
         exact = self.lookup(query.strip()) if query.strip() else None
@@ -382,6 +412,8 @@ class CourseDB:
             matching = self.filtered_lookup(query.strip(), f, exclude)
             return {"total": int(matching is not None), "cards": [self.card(matching["code"], filters=f)]
                     if matching and offset == 0 and limit > 0 else []}
+        sort = sort if sort in BROWSE_SORTS else "overall"
+        direction = direction if direction in {"asc", "desc"} else ("asc" if sort == "workload" else "desc")
         q_tokens = tokenize(query)
         rows = []
         for code, c in self.courses.items():
@@ -392,18 +424,25 @@ class CourseDB:
             rel = self._bm25(code, q_tokens) if q_tokens else 0.0
             if q_tokens and rel == 0:
                 continue
-            o = self._q(c)
+            o = self._q(c, (f or {}).get("q_term"))
             n = o.get("responded") or 0
             # Shrink small-sample ratings toward the FAS average so 5.0-from-3-students doesn't top the list.
             bayes = ((o.get("course_overall") or 0) * n + 4.25 * 8) / (n + 8) if o.get("course_overall") else 0
-            key = {"rating": -bayes,
-                   "workload": o.get("workload_hrs_mean") if o.get("workload_hrs_mean") is not None else 99,
-                   "recommend": -(o.get("recommend_mean") or 0),
-                   "reviews": -n,
-                   "code": 0}.get(sort, -bayes)
-            rows.append(((-rel if q_tokens and sort == "relevance" else key), code))
+            if sort in Q_SORT_FIELDS:
+                value = o.get(Q_SORT_FIELDS[sort])
+            elif sort == "code":
+                value = 0
+            elif sort == "relevance" and q_tokens:
+                value = rel
+            else:
+                value = bayes if o.get("course_overall") is not None else None
+            missing = not isinstance(value, (int, float)) or not math.isfinite(value)
+            # Missing metrics are always last, including ascending order. Code breaks ties
+            # deterministically so pagination cannot repeat or skip equally scored courses.
+            key = 0 if missing else (value if direction == "asc" else -value)
+            rows.append((missing, key, code))
         rows.sort()
-        return {"total": len(rows), "cards": [self.card(code, filters=f) for _, code in rows[offset:offset + limit]]}
+        return {"total": len(rows), "cards": [self.card(code, filters=f) for _, _, code in rows[offset:offset + limit]]}
 
     def facets(self):
         subjects = {}
@@ -414,7 +453,7 @@ class CourseDB:
             name, n = subjects.get(sub, (c["dept"] or sub, 0))
             subjects[sub] = (name, n + 1)
         return {"subjects": [{"code": k, "name": v[0], "count": v[1]} for k, v in sorted(subjects.items())],
-                "terms": list(UPCOMING), "gen_eds": GEN_EDS, "divisions": DIVISIONS, "days": DAY_CODES}
+                "terms": list(UPCOMING), "q_terms": self.q_terms(), "gen_eds": GEN_EDS, "divisions": DIVISIONS, "days": DAY_CODES}
 
     def is_taken(self, code, taken):
         """True if the course, or any code it's cross-listed as, is in the student's taken set."""
@@ -451,7 +490,7 @@ class CourseDB:
                 continue
             if filters and not self.matches(c, filters):
                 continue
-            o = self._q(c)
+            o = self._q(c, (filters or {}).get("q_term"))
             if dept and dept.lower() not in (c["dept"] + " " + code + " " + " ".join(c["also_listed_as"])).lower():
                 continue
             if term and term not in {x["term"] for x in c["offerings"]}:
@@ -475,9 +514,11 @@ class CourseDB:
 
     def brief(self, code, filters=None):
         c = self.courses[code]
-        o = self._q(c)
+        o = self._q(c, (filters or {}).get("q_term"))
         cat = c.get("catalog") or {}
         term, sec = self._next(c, filters)
+        q_term = (filters or {}).get("q_term")
+        comments = [x for x in c["comments"] if not q_term or x.get("term") == q_term]
         return {
             "code": code,
             "title": c["title"],
@@ -489,12 +530,16 @@ class CourseDB:
             "effective_lectures": o.get("effective_lectures"),
             **{field: o.get(field) for field, *_ in EXTRA_Q_SCORES},
             "q_term": o.get("term"),
+            "q_report_count": o["report_count"],
+            "q_aggregation": "Equal-weight mean of available report scores; missing values omitted per metric.",
+            "q_terms": o["terms"],
             "workload_hrs": o["workload_hrs_mean"],
             "recommend": o["recommend_mean"],
-            "responded": o["responded"],
-            "tags": [t["label"] for t in c["tags"]],
-            "student_consensus": c["summary"],
-            "sample_comment": None if c["summary"] else (c["comments"][0]["text"][:160] if c["comments"] else None),
+            "average_responses_per_report": o["responded"],
+            "average_students_invited_per_report": o.get("invited"),
+            "tags": [t["label"] for t in c["tags"]] if not q_term else [],
+            "student_consensus": c["summary"] if not q_term else None,
+            "sample_comment": None if c["summary"] and not q_term else (comments[0]["text"][:160] if comments else None),
             "offered": [x["term"] for x in cat.get("offered", []) if x["term"] in UPCOMING] or "not in Fall 2026 / Spring 2027 catalog",
             "next_meets": f"{term}: {self._meets(sec)}" if term else None,
             "gen_ed": cat.get("gen_ed"),
@@ -513,8 +558,11 @@ class CourseDB:
             return None
         if not compact:
             return {**c, "comments": c["comments"][:max_comments], "total_comments": len(c["comments"])}
+        q_term = (filters or {}).get("q_term")
+        offerings = [o for o in c["offerings"] if not q_term or o.get("term") == q_term]
+        comments = [x for x in c["comments"] if not q_term or x.get("term") == q_term]
         # Trimmed view for the model: fewer, shorter comments and only the headline numbers (saves tokens).
-        keep = ("term", "instructors", "course_overall", "course_overall_fas_avg", "workload_hrs_mean",
+        keep = ("term", "section", "instructors", "course_overall", "course_overall_fas_avg", "workload_hrs_mean",
                 "recommend_mean", "responded", "enroll_reasons", "instructor_score", "effective_lectures", *(field for field, *_ in EXTRA_Q_SCORES))
         cat = dict(c.get("catalog") or {})
         if filters:
@@ -530,10 +578,10 @@ class CourseDB:
         return {
             "code": c["code"], "title": c["title"], "dept": c["dept"], "also_listed_as": c["also_listed_as"],
             "catalog": cat or None,
-            "tags": c["tags"], "student_consensus": c["summary"],
-            "offerings": [{k: o.get(k) for k in keep} for o in c["offerings"]],
-            "comments": [x["text"][:350] for x in sorted(c["comments"], key=lambda x: -len(x["text"]))[:max_comments]],
-            "total_comments": len(c["comments"]),
+            "tags": c["tags"] if not q_term else [], "student_consensus": c["summary"] if not q_term else None,
+            "offerings": [{k: o.get(k) for k in keep} for o in offerings],
+            "comments": [x["text"][:350] for x in sorted(comments, key=lambda x: -len(x["text"]))[:max_comments]],
+            "total_comments": len(comments),
         }
 
     def lookup(self, code):
@@ -576,7 +624,7 @@ class CourseDB:
         c = self.lookup(code)
         if not c:
             return None
-        o = self._q(c)
+        o = self._q(c, (filters or {}).get("q_term"))
         cat = c.get("catalog") or {}
         term, sec = self._next(c, filters)
         return {
@@ -594,14 +642,17 @@ class CourseDB:
             "effective_lectures": o.get("effective_lectures"),
             **{field: o.get(field) for field, *_ in EXTRA_Q_SCORES},
             "q_term": o.get("term"),
+            "q_report_count": o["report_count"],
+            "q_terms": o["terms"],
             "overall": o["course_overall"],
             "overall_fas_avg": o["course_overall_fas_avg"],
             "workload_hrs": o["workload_hrs_mean"],
             "recommend": o["recommend_mean"],
             "responded": o["responded"],
+            "invited": o.get("invited"),
             "n_terms": len({x["term"] for x in c["offerings"]}),
-            "tags": c["tags"],
-            "summary": c["summary"],
+            "tags": c["tags"] if not (filters or {}).get("q_term") else [],
+            "summary": c["summary"] if not (filters or {}).get("q_term") else None,
         }
 
     def suggest(self, q, limit=8):

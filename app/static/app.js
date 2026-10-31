@@ -65,7 +65,17 @@ const del = (path) => checkedWrite(path, { method: "DELETE" });
 const enc = encodeURIComponent;
 
 // ---------- views: home (Apple-style landing) vs. conversation ----------
+let browseGeneration = 0;
+const browseStates = new Map(), browseControllers = new Set();
+function cancelBrowseWork() {
+  browseGeneration++;
+  browseControllers.forEach(controller => controller.abort());
+  browseControllers.clear();
+  for (const [block] of browseStates) if (!block || !block.isConnected) browseStates.delete(block);
+  $("#f-show").disabled = false;
+}
 function showHome() {
+  cancelBrowseWork();
   document.body.classList.remove("chatting");
   document.body.classList.add("home");
   $(".hero").appendChild($("#composer-wrap"));
@@ -103,7 +113,8 @@ function cardHTML(c) {
         <div class="stat"><div class="n">${fmt(c.workload_hrs)}<small>hrs</small></div><div class="l">Per week</div></div>
         <div class="stat"><div class="n">${fmt(c.recommend)}</div><div class="l">Recommend</div></div>
       </div>`}
-      ${c.instructor_score != null || c.effective_lectures != null ? `<p class="meta">Instructor ${fmt(c.instructor_score)} · Effective lectures ${fmt(c.effective_lectures)}<br>Latest Q report: ${esc(c.q_term || "term unavailable")}; instructors may differ.</p>` : ""}
+      ${c.instructor_score != null || c.effective_lectures != null ? `<p class="meta">Instructor ${fmt(c.instructor_score)} · Effective lectures ${fmt(c.effective_lectures)}<br>Q reports: ${esc(c.q_term || "term unavailable")} · ${fmt(c.q_report_count, 0)} reports; instructors may differ.</p>` : ""}
+      ${c.sort_metric ? `<p class="sort-metric">${esc(c.sort_metric.label)}: <b>${c.sort_metric.value == null ? "Unavailable" : fmt(c.sort_metric.value, 2)}</b><br>Q reports: ${esc(c.q_term || "unavailable")} · ${fmt(c.q_report_count, 0)} reports</p>` : ""}
       <div class="card-foot">
         <div class="who"><span class="avatar">${esc(initials(prof))}</span><span>${esc(prof + more)}</span></div>
         <div class="term">${esc(c.term || "")}</div>
@@ -165,6 +176,7 @@ async function toggleTaken(code, title) {
   renderTaken();
   try {
     await (on ? putJSON(`/api/account/taken/${enc(code)}`) : del(`/api/account/taken/${enc(code)}`));
+    refreshBrowseResults();
   } catch (err) {
     if (on) taken.delete(code); else taken.set(code, previous);
     syncCardButtons(code); renderTaken(); saveError(err);
@@ -223,6 +235,7 @@ function makeProgress(bot) {
 async function send(message) {
   message = message.trim();
   if (!message || busy) return;
+  cancelBrowseWork();
   busy = true;
   $("#ask").disabled = true;
   $("#new-chat").disabled = true;
@@ -601,19 +614,33 @@ async function openDetail(code) {
     </div>
     ${tagsHTML(c.tags)}
     ${catalogHTML(c.catalog)}
-    ${c.offerings.length ? `<h3 class="sub">Q report history</h3>` : '<p class="no-q">No Q Guide reviews available in the loaded data</p>'}
-    <table class="offerings"${c.offerings.length ? "" : " hidden"}>
+    ${c.offerings.length ? `<h3 class="sub" id="q-history-title">Q report history</h3><p class="hint q-history-hint">Scroll across the table to see every metric.</p>` : '<p class="no-q">No Q Guide reviews available in the loaded data</p>'}
+    <div class="q-history-scroll" role="region" aria-labelledby="q-history-title" tabindex="0"${c.offerings.length ? "" : " hidden"}>
+    <table class="offerings">
       <thead><tr><th>Term</th><th>Instructor</th><th>Overall</th><th>Hrs/wk</th><th>Recommend</th><th>Instructor rating</th><th>Effective lectures</th><th>Responses</th></tr></thead>
       <tbody>${c.offerings.map((o) => `
-        <tr><td>${esc(o.term)}</td><td>${esc(o.instructors.join(", "))}</td><td>${fmt(o.course_overall, 2)}</td>
+        <tr><td>${esc(o.term)}${o.section ? `<br><small>Section ${esc(o.section)}</small>` : ""}</td><td>${esc(o.instructors.join(", "))}</td><td>${fmt(o.course_overall, 2)}</td>
         <td>${fmt(o.workload_hrs_mean)}</td><td>${fmt(o.recommend_mean, 2)}</td><td>${fmt(o.instructor_score, 2)}</td><td>${fmt(o.effective_lectures, 2)}</td><td>${fmt(o.responded, 0)}/${fmt(o.invited, 0)}</td></tr>`).join("")}
       </tbody>
     </table>
-    ${c.offerings.length ? `<details><summary>More Q scores · ${esc(c.offerings[0].term)}</summary><p class="hint">Latest loaded report, out of 5. Instructor scores average that report’s instructors; current instructors may differ. — means unavailable.</p><table class="offerings"><tbody>${extraQScores.map(([field, label]) => `<tr><th>${esc(label)}</th><td>${fmt(c.offerings[0][field], 2)}</td></tr>`).join("")}</tbody></table></details>` : ""}
+    </div>
+    ${c.offerings.length ? `<details><summary>More Q scores · all ${c.offerings.length} reports</summary>
+      <label class="f-field">Q report <select id="q-report-select">${c.offerings.map((o, i) => `<option value="${i}">${esc(o.term)}${o.section ? ` · Section ${esc(o.section)}` : ""} · ${esc(o.instructors.join(", "))}</option>`).join("")}</select></label>
+      <p class="hint">Scores from the selected report, out of 5. Instructor scores average that report’s instructors; current instructors may differ. — means unavailable.</p>
+      <table class="offerings"><tbody id="q-report-scores"></tbody></table></details>` : ""}
     <div class="comments">
       <h3>What students said <span class="meta">(${c.total_comments})</span></h3>
       ${c.comments.map((x) => `<div class="comment">${esc(x.text)}<div class="ct">${esc(x.term)}</div></div>`).join("") || '<p class="meta">No written comments.</p>'}
     </div>`;
+  if (c.offerings.length) {
+    const reportSelect = $("#q-report-select");
+    const renderReport = () => {
+      const report = c.offerings[Number(reportSelect.value)];
+      $("#q-report-scores").innerHTML = extraQScores.map(([field, label]) => `<tr><th>${esc(label)}</th><td>${fmt(report[field], 2)}</td></tr>`).join("");
+    };
+    reportSelect.addEventListener("change", renderReport);
+    renderReport();
+  }
   $("#d-fav").addEventListener("click", async () => {
     const card = favorites[c.code] || (await api("/api/cards", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify([c.code]) }).then((r) => r.json()))[0];
     if (card) await toggleFav(card);
@@ -749,6 +776,7 @@ function renderFilterControls() {
   $$(".segctl", fPanel).forEach((seg) => $$("button", seg).forEach((b) =>
     { const on = String(filters[seg.dataset.key] ?? "") === b.dataset.v; b.classList.toggle("on", on); b.setAttribute("aria-pressed", on); }));
   $$("#f-days button").forEach(b => { const on = (filters.avoid_days || []).includes(b.dataset.v); b.classList.toggle("on", on); b.setAttribute("aria-pressed", on); });
+  $("#f-q-term").value = filters.q_term || "";
   $("#f-subject").value = filters.subject || "";
   $("#f-gen_ed").value = filters.gen_ed || "";
   $("#f-divisional").value = filters.divisional || "";
@@ -759,8 +787,8 @@ function renderFilterControls() {
   filterSummary();
 }
 let countTimer = null, countVersion = 0;
-async function browseRequest(state) {
-  const response = await api("/api/browse", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(state) });
+async function browseRequest(state, signal) {
+  const response = await api("/api/browse", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(state), signal });
   if (!response.ok) throw new Error("Couldn't load courses. Please try again.");
   return response.json();
 }
@@ -798,7 +826,7 @@ $$("#f-days button").forEach((b) => b.addEventListener("click", () => {
   filters.avoid_days = [...set];
   filtersChanged();
 }));
-[["#f-subject", "subject"], ["#f-gen_ed", "gen_ed"], ["#f-divisional", "divisional"]].forEach(([id, k]) =>
+[["#f-q-term", "q_term"], ["#f-subject", "subject"], ["#f-gen_ed", "gen_ed"], ["#f-divisional", "divisional"]].forEach(([id, k]) =>
   $(id).addEventListener("change", (e) => { filters[k] = e.target.value; filtersChanged(); }));
 $("#f-earliest").addEventListener("change", (e) => { filters.earliest_start = e.target.value ? Number(e.target.value) : ""; filtersChanged(); });
 $("#f-workload").addEventListener("input", (e) => { filters.max_workload = Number(e.target.value) || ""; filtersChanged(); });
@@ -816,54 +844,115 @@ $("#open-filters").addEventListener("click", () => toggleFilters());
 $("#f-close").addEventListener("click", () => toggleFilters(false));
 
 // Results of a direct search render as a block in the thread (no AI involved).
-const SORTS = [["rating", "Best rated"], ["workload", "Lightest workload"], ["recommend", "Most recommended"], ["reviews", "Most reviewed"], ["relevance", "Keyword match"]];
+const SORTS = [
+  ["rating", "Best rated (adjusted)"], ["overall", "Course overall", "overall"],
+  ["workload", "Hours per week", "workload_hrs"], ["recommend", "Would recommend", "recommend"],
+  ["instructor", "Instructor rating", "instructor_score"], ["lectures", "Effective lectures", "effective_lectures"],
+  ...extraQScores.map(([field, label]) => [field, label, field]),
+  ["reviews", "Average responses per report", "responded"], ["invited", "Average students invited per report", "invited"], ["relevance", "Keyword match"],
+];
+const defaultSortDirection = sort => sort === "workload" ? "asc" : "desc";
+function browseCardHTML(card, state) {
+  const [, label, field] = SORTS.find(([key]) => key === state.sort) || [];
+  return cardHTML(field ? { ...card, sort_metric: { label, value: card[field] } } : card);
+}
+
 async function showResults(append = null) {
   const query = $("#f-query").value.trim();
-  const state = append || { sort:query ? "relevance" : "rating", offset:0, query, filters:activeFilters() };
+  const state = { ...(append || { sort:query ? "relevance" : "overall", offset:0, query, filters:activeFilters() }) };
+  state.direction ||= defaultSortDirection(state.sort);
   let block = append?.block;
-  if (block?.dataset.loading === "true") return;
-  if (block) { block.dataset.loading = "true"; $(".more", block).disabled = true; }
+  if (block?.dataset.loading === "true" && !state.refresh) return;
+  const previous = browseStates.get(block || null);
+  previous?.controller.abort();
+  state.controller = new AbortController();
+  state.generation = browseGeneration;
+  browseControllers.add(state.controller);
+  browseStates.set(block || null, state);
+  const current = () => state.generation === browseGeneration && browseStates.get(block || null) === state && (!block || block.isConnected);
+  if (block) {
+    block.dataset.loading = "true";
+    $(".more", block).disabled = true;
+    $$(".sort-controls select", block).forEach(select => { select.disabled = true; });
+  }
   $("#f-show").disabled = true;
   try {
-    const res = await browseRequest({ filters:state.filters, query:state.query, sort:state.sort, offset:state.offset });
+    const res = await browseRequest({ filters:state.filters, query:state.query, sort:state.sort, direction:state.direction, offset:state.offset }, state.controller.signal);
+    if (!current()) return null;
     if (!block) {
       showChat(); block = addTurn("bot results");
+      browseStates.delete(null);
+      browseStates.set(block, state);
+      state.block = block;
       block.innerHTML = `<div class="results-head"><h2>${res.total.toLocaleString()} matching course${res.total === 1 ? "" : "s"}</h2>
-        <select aria-label="Sort">${SORTS.filter(([k]) => k !== "relevance" || state.query).map(([k,l]) => `<option value="${k}"${k === state.sort ? " selected" : ""}>${l}</option>`).join("")}</select></div>
-        <p class="results-sub">${esc(describeFilters(state))}</p><div class="cards"></div><button class="pill pill-soft more" hidden>Show more</button><p class="hint result-status" role="status"></p>`;
-      if (!res.total) $(".result-status", block).textContent = "No courses match. Open Filters to remove a constraint or try different keywords.";
-      $("select", block).addEventListener("change", async e => {
-        const select = e.target; select.disabled = true;
-        const next = await showResults({ ...state, sort:select.value, offset:0, block:null });
-        if (next) block.remove(); else select.value = state.sort;
-        select.disabled = false;
-      });
+        <div class="sort-controls"><select class="sort-metric-select" aria-label="Sort by Q metric">${SORTS.filter(([k]) => k !== "relevance" || state.query).map(([k,l]) => `<option value="${k}"${k === state.sort ? " selected" : ""}>${l}</option>`).join("")}</select>
+        <select class="sort-direction" aria-label="Sort direction"><option value="desc"${state.direction === "desc" ? " selected" : ""}>Highest first</option><option value="asc"${state.direction === "asc" ? " selected" : ""}>Lowest first</option></select></div></div>
+        <p class="results-sub">${esc(describeFilters(state))} · Q metrics average all available report scores${state.filters.q_term ? ` in ${esc(state.filters.q_term)}` : " across all terms"}; missing scores are omitted and unavailable values sort last.</p><div class="cards"></div><button class="pill pill-soft more" hidden>Show more</button><p class="hint result-status" role="status"></p>`;
     }
+    $("h2", block).textContent = `${res.total.toLocaleString()} matching course${res.total === 1 ? "" : "s"}`;
+    $(".result-status", block).textContent = res.total ? "" : "No courses match. Open Filters to remove a constraint or try different keywords.";
+    $(".sort-metric-select", block).value = state.sort;
+    $(".sort-direction", block).value = state.direction;
+    for (const select of $$(".sort-controls select", block)) select.onchange = () => {
+      const metric = $(".sort-metric-select", block).value;
+      const direction = select.classList.contains("sort-metric-select") ? defaultSortDirection(metric) : select.value;
+      return showResults({ ...state, sort:metric, direction, offset:0, block, refresh:true });
+    };
     const grid = $(".cards", block), tmp = document.createElement("div");
-    tmp.innerHTML = res.cards.map(cardHTML).join(""); bindCards(tmp, res.cards);
+    if (state.refresh) grid.replaceChildren();
+    tmp.innerHTML = res.cards.map(card => browseCardHTML(card, state)).join(""); bindCards(tmp, res.cards);
     while (tmp.firstElementChild) grid.appendChild(tmp.firstElementChild);
     const more = $(".more", block), shown = state.offset + res.cards.length;
     more.hidden = shown >= res.total;
-    more.onclick = () => showResults({ ...state, offset:shown, block });
+    more.textContent = "Show more";
+    more.onclick = () => showResults({ ...state, offset:shown, block, refresh:false });
     if (!append) block.scrollIntoView({ behavior:"smooth", block:"start" });
     $("#browse-status").textContent = "";
     return block;
   } catch (err) {
+    if (!current() || err.name === "AbortError") return null;
     const message = "Couldn't load courses. Your results are still here; try again.";
-    if (block) $(".result-status", block).textContent = message;
+    if (block) {
+      $(".result-status", block).textContent = message;
+      if (state.refresh) {
+        const retry = $(".more", block);
+        retry.hidden = false; retry.textContent = "Retry results";
+        retry.onclick = () => showResults({ ...state, offset:0, refresh:true });
+      }
+      $(".sort-metric-select", block).value = previous?.sort || state.sort;
+      $(".sort-direction", block).value = previous?.direction || state.direction;
+    }
     if (fPanel.hidden) { fPanel.hidden = false; document.body.classList.add("filters-open"); $("#open-filters").setAttribute("aria-expanded", "true"); }
     $("#browse-status").textContent = message;
     return null;
   } finally {
-    if (block) { block.dataset.loading = "false"; $(".more", block).disabled = false; }
-    $("#f-show").disabled = false;
+    browseControllers.delete(state.controller);
+    if (browseStates.get(block || null) === state) {
+      if (block) {
+        block.dataset.loading = "false"; $(".more", block).disabled = false;
+        $$(".sort-controls select", block).forEach(select => { select.disabled = false; });
+      } else browseStates.delete(null);
+      $("#f-show").disabled = false;
+    }
   }
+}
+
+function refreshBrowseResults() {
+  for (const [block, state] of [...browseStates]) {
+    if (block ? !block.isConnected : state.generation !== browseGeneration) {
+      browseStates.delete(block); continue;
+    }
+    // The server excludes taken courses, so an old numeric offset is no longer valid.
+    showResults({ ...state, offset:0, block, refresh:true });
+  }
+  if (!fPanel.hidden) filtersChanged();
 }
 
 function describeFilters(state) {
   const f = state.filters, parts = [];
   if (state.query) parts.push(`“${state.query}”`);
   if (f.term) parts.push(f.term);
+  if (f.q_term) parts.push(`Q reports: ${f.q_term}`);
   if (f.subject) parts.push(f.subject);
   if (f.min_overall) parts.push(`rated ${f.min_overall}+`);
   for (const [field, label] of extraQScores) {
@@ -889,6 +978,7 @@ $("#f-show").addEventListener("click", () => { showResults(); if (window.innerWi
 
 // Populate dropdowns from the data.
 api("/api/facets").then((r) => r.json()).then((fx) => {
+  $("#f-q-term").insertAdjacentHTML("beforeend", (fx.q_terms || []).map(term => `<option>${esc(term)}</option>`).join(""));
   $("#f-subject").insertAdjacentHTML("beforeend", fx.subjects.map((s) => `<option value="${esc(s.code)}">${esc(s.code)} · ${esc(s.name)} (${s.count})</option>`).join(""));
   $("#f-gen_ed").insertAdjacentHTML("beforeend", fx.gen_eds.map((g) => `<option>${esc(g)}</option>`).join(""));
   $("#f-divisional").insertAdjacentHTML("beforeend", fx.divisions.map((g) => `<option>${esc(g)}</option>`).join(""));
@@ -925,18 +1015,40 @@ function addFollowUps(turnEl) {
 }
 // Next matches for the same search, straight from the index: instant and no AI cost.
 async function showMore(turnEl, btn) {
+  const generation = browseGeneration, requestSession = sessionId;
   btn.disabled = true;
   btn.textContent = "Loading…";
-  const r = await api("/api/more", { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId }) }).then((x) => (x.ok ? x.json() : null)).catch(() => null);
-  const grid = $(".cards", turnEl);
-  if (!r?.cards?.length || !grid) { btn.textContent = "No more matches"; return; }
-  const tmp = document.createElement("div");
-  tmp.innerHTML = r.cards.map(cardHTML).join("");
-  bindCards(tmp, r.cards);
-  [...tmp.children].forEach((el) => grid.appendChild(el));
-  btn.disabled = false;
-  btn.textContent = "Show more like these";
+  let status = $(".more-status", turnEl);
+  if (!status) {
+    status = document.createElement("p"); status.className = "hint more-status";
+    status.setAttribute("role", "status"); turnEl.appendChild(status);
+  }
+  status.textContent = "";
+  const current = () => generation === browseGeneration && requestSession === sessionId && turnEl.isConnected;
+  try {
+    const response = await api("/api/more", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: requestSession }) });
+    if (!response.ok) throw new Error("more failed");
+    const r = await response.json();
+    if (!current()) return;
+    const grid = $(".cards", turnEl);
+    if (!grid) return;
+    if (!r.cards?.length) { btn.textContent = "No more matches"; return; }
+    const shown = new Set($$(".card", turnEl).map(card => card.dataset.code));
+    const cards = r.cards.filter(card => !shown.has(card.code) && !taken.has(card.code));
+    const tmp = document.createElement("div");
+    tmp.innerHTML = cards.map(cardHTML).join("");
+    bindCards(tmp, cards);
+    [...tmp.children].forEach(el => grid.appendChild(el));
+    btn.disabled = false;
+    btn.textContent = "Show more like these";
+  } catch (err) {
+    if (!current()) return;
+    status.textContent = "Couldn't load more courses. Please try again.";
+    btn.disabled = false; btn.textContent = "Retry more courses";
+  } finally {
+    if (!current() && turnEl.isConnected) { btn.disabled = false; btn.textContent = "Show more like these"; }
+  }
 }
 new MutationObserver(() => {
   if (busy) return;
