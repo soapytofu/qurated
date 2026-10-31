@@ -61,6 +61,10 @@ def extract(message, today=None):
     remaining, chosen_term, term_issues = extract_terms(message, today=today)
     clarifications.extend(term_issues)
     remaining = WORKLOAD.sub(workload, remaining)
+    from numeric_constraints import normalize_numbers
+    remaining, numeric_issues = normalize_numbers(remaining)
+    clarifications.extend(numeric_issues)
+    remaining = WORKLOAD.sub(workload, remaining)
     remaining = SCORE.sub(score, remaining)
     remaining = SCORE_PLUS.sub(score, remaining)
     return {'query': remaining, 'filters': filters, 'term': chosen_term,
