@@ -464,9 +464,11 @@ def empty_result_reply(db, p, message, taken):
         return (", ".join(named) + (" is" if len(named) == 1 else " are") +
                 " marked as taken in your saved courses, so I excluded " + ("it" if len(named) == 1 else "them") +
                 " from recommendations. You can change this in Courses I've taken, or ask for alternatives.")
+    non_code_prefixes = {'spring', 'summer', 'fall', 'autumn', 'winter', 'under', 'over', 'above',
+                         'below', 'than', 'least', 'most', 'before', 'after', 'at', 'year', 'rated'}
     unknown = [m.group().upper() for m in CODE_RE.finditer(message)
-               if re.match(r"[A-Z][A-Z-]+\s?\d", m.group())
-               and not re.match(r"(?:SPRING|SUMMER|FALL|AUTUMN|WINTER)\b", m.group(), re.I)
+               if re.match(r"[A-Z][A-Z-]+\s?\d", m.group(), re.I)
+               and re.match(r'[A-Za-z-]+', m.group()).group().lower() not in non_code_prefixes
                and not db.lookup(m.group())]
     if unknown:
         return ("I couldn't find " + ", ".join(dict.fromkeys(unknown)) +

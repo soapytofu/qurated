@@ -30,8 +30,9 @@ def test_taken_crosslisting_gets_the_same_saved_state_explanation(monkeypatch):
     assert 'marked as taken' in text
 
 
-def test_unknown_course_offers_code_title_and_browse_guidance(monkeypatch):
-    text = reply(database(), 'Tell me about ZXQ 9999', [], monkeypatch)
+@pytest.mark.parametrize('code', ['ZXQ 9999', 'zxq 9999'])
+def test_unknown_course_offers_code_title_and_browse_guidance(monkeypatch, code):
+    text = reply(database(), 'Tell me about ' + code, [], monkeypatch)
     assert "couldn't find ZXQ 9999 in the loaded catalog" in text
     assert 'course code' in text and 'title' in text and 'Browse courses' in text
     assert 'candidates' not in text and 'available data' not in text
@@ -41,3 +42,9 @@ def test_known_course_filtered_out_is_not_claimed_unknown_or_taken(monkeypatch):
     text = reply(database(), 'Tell me about TEST 1', [], monkeypatch, {'term': '2027 Spring'})
     assert "couldn't find matching courses" in text
     assert 'marked as taken' not in text and "couldn't find TEST 1" not in text
+
+
+def test_unmatched_workload_search_does_not_turn_under_into_a_course_code(monkeypatch):
+    text = reply(database(), 'Interesting courses under 5 hours', [], monkeypatch)
+    assert "couldn't find matching courses" in text
+    assert 'UNDER 5' not in text
