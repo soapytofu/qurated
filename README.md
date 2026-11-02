@@ -1,246 +1,306 @@
 # Qurated
 
-**The Harvard Undergraduate Association's course advisor.** Students describe what they want from a class
-("a fun Gen Ed with a light workload", "something like CS50 but less work"), and Qurated recommends FAS courses.
-Its answers draw on what past students said in their **Q reports** and on the **my.harvard catalog**.
+**A course advisor built for the Harvard Undergraduate Association.** Describe what you want from a class,
+browse FAS courses, compare Q-guide ratings and workload, and save favorites or courses already taken.
+Answers use locally imported Q reports and my.harvard catalog records, with checks on course recommendations
+and quoted evidence. This is not an official Harvard University service.
 
-- 🎓 **Grounded answers:** ratings, weekly workload and real student quotes from Q reports, plus terms offered, meeting times, Gen Ed / Divisional Distribution / QRD, descriptions and syllabus links from my.harvard. Every quote is checked word-for-word against the source.
-- 🛡️ **Validated responses:** progress appears immediately; each course card is checked before it appears, and advice is shown only after the complete answer passes. Obvious jailbreak and homework requests are refused in code, with no AI call.
-- 💬 **Conversational:** up to 6 picks per answer, plus a free "Show more like these" button. Qurated asks one clarifying question when a request is too vague, and remembers facts the student mentions ("junior in CS") for the rest of the chat.
-- 🏷️ **Course tags:** each course is tagged with what students consistently say about it (e.g. "engaging lectures", "heavy reading").
-- ❤️ **Student accounts:** favorites, preferences and courses already taken are saved per student, and courses they've taken are never recommended.
-- 🔒 **Harvard-only:** sign-in requires a verified `@college.harvard.edu` Google account.
+This repository contains **code and synthetic test fixtures only**. Real Q reports, catalog snapshots,
+student records, API keys, and saved HarvardKey sessions are excluded from Git. Keep Q data within its
+authorized Harvard audience; coordinate a student rollout with the relevant university offices.
 
-> **Data policy.** Q reports are meant for the Harvard community. This repo contains **code only**: no Q data, catalog
-> data, student accounts or secrets. Run the scrapers yourself with your own HarvardKey, keep the data private, and
-> get the relevant offices (e.g. the Office of Undergraduate Education, OUE) on board before opening Qurated to
-> other students.
-
----
-
-## How it works
-
-```
- OFFLINE (refresh each term)                          ONLINE (each question)
- ───────────────────────────                          ──────────────────────
- Q reports ──scrape.py───► reports/*.json ─┐           Browser (HTML/CSS/JS)
- (your HarvardKey session)                 │             │ POST /api/chat  (signed-in only)
- my.harvard ─catalog.py──► catalog/*.json ─┼► CourseDB ◄─┤ FastAPI server
- (public pages)                            │  in-memory  │  1. pre-check: does this need a course search?
- Claude Haiku ─tag_courses.py► tags.json ──┘  BM25 index │  2. retrieval: filters + keyword search (~2 ms)
-   (Batches API)                                          │  3. ONE Claude Sonnet call → structured JSON
- SQLite: favorites / courses taken / prefs ◄──────────────┤  4. send each validated card, then advice
-```
-
-1. **Scrape (offline).**
-   - `qscrape/scrape.py` uses Playwright and your HarvardKey session to download every Q report, then parses its ratings, workload, recommend score, enrollment reasons and comments.
-   - `qscrape/catalog.py` reads my.harvard's public course search one subject at a time, expands multi-section courses such as Expos and languages, and fetches each course's detail page.
-   - Raw pages are saved gzipped, so a parser fix can be re-applied without downloading again.
-2. **Tag (offline).** `app/tag_courses.py` has Claude Haiku summarize each course's comments into 3–5 sentiment-labeled tags plus a one-line summary, using the half-price Batches API.
-3. **Index.** `app/courses.py` merges Q reports, catalog and tags into one record per course. A weighted BM25 keyword index covers titles, descriptions, Gen Eds, section topics, tags and comments, with filters for term, workload, Gen Ed, undergrad level and courses already taken.
-4. **Answer (`app/pipeline.py`).**
-   - A quick pre-check (a regex, or Claude Haiku) skips searching for questions like "what's a Gen Ed?".
-   - The server picks the top 10 candidate courses itself, with no LLM involved. When undergraduate matches run thin, graduate courses fill the remaining slots and are labeled Graduate.
-   - It then makes **one** Claude Sonnet 5.5 call, with thinking off and a JSON-schema output, that returns `{picks, advice, options, remember}`. The fixed instructions are prompt-cached.
-   - As the response streams, each pick that passes the per-pick checks (course allowlist, taken courses, verified quote) is sent as a card. Advice, clarifying options and remembered facts are sent only after the complete response passes validation. Refused or incomplete responses show a generic error instead.
-   - Follow-ups like "which of those is lightest?" reuse the courses already shown.
-
-### Why one call instead of an agent loop
-Historical measurements before response-validation guardrails (rebenchmark current latency before advertising these numbers):
-
-I benchmarked several approaches (`app/experiments/bench.py`) on 8 fixed student questions, with Claude Opus as a
-blind judge scoring fit, grounding and helpfulness from 1 to 5:
-
-| Approach | First card | Full answer | Quality | Cost/answer |
-|---|---|---|---|---|
-| Agent loop (Claude calls search/detail/card tools) | 8.5s | 11.1s | 3.54 | ~3.8¢ |
-| **Server-side retrieval + one Sonnet call, thinking off** | **~1.8s** | **~3.0s** | **3.79** | **~1.1¢** |
-
-Turning thinking off was the biggest single win. Retrieving on the server removed 2–3 round trips to the model.
-Hedged requests (a duplicate request is sent if no tokens arrive within 2.5s) and an IPv4-only HTTP transport
-remove the remaining latency spikes.
-
----
-
-## Setup
-
-### Prerequisites
-- macOS or Linux with [uv](https://docs.astral.sh/uv/) (installs the right Python automatically)
-- Google Chrome (only for the Q report scraper's HarvardKey login)
-- An [OpenAI API key](https://platform.openai.com/api-keys) or [Anthropic API key](https://console.anthropic.com/)
-- A Google OAuth Client ID for sign-in: [step-by-step guide](docs/google-signin.md), about 10 minutes, free
-
-### 1. Configure
-```bash
-cd app
-cp .env.example .env
-# Fill in your selected AI provider key, GOOGLE_CLIENT_ID, and a long random SESSION_SECRET, e.g.:
-python3 -c "import secrets; print(secrets.token_urlsafe(48))"
-```
-
-| Variable | Purpose | Default |
+| What you want to do | Start here | Credentials needed |
 |---|---|---|
-| `LLM_PROVIDER` | `anthropic` or `openai`; explicit selection, no automatic fallback | `anthropic` |
-| `ANTHROPIC_API_KEY` | Claude API access | required for Anthropic chat or batch tagging |
-| `OPENAI_API_KEY` | OpenAI API access | required for OpenAI chat |
-| `OPENAI_MODEL` | Responses API model supporting structured outputs | `gpt-4.1-mini` |
-| `OPENAI_ROUTER_MODEL` | Optional separate routing/query-expansion model | same as `OPENAI_MODEL` |
-| `SEARCH_QUERY_EXPANSION` | Optional AI query rewrites; `0` uses deterministic topic expansion only, `1` opts in to AI rewrites | `0` |
-| `GOOGLE_CLIENT_ID` | Google sign-in ([guide](docs/google-signin.md)) | required |
-| `SESSION_SECRET` | Signs login cookies | required |
-| `ALLOWED_EMAIL_DOMAINS` | Comma-separated domains allowed to sign in | `college.harvard.edu` |
-| `DAILY_QUESTION_LIMIT` | Questions per student per day | `40` |
-| `PER_MINUTE_QUESTION_LIMIT` | Questions per student per minute | `6` |
-| `DAILY_BUDGET_USD` | Total API spend per day; AI answers pause past it (Browse still works) | `20` |
-| `ADMIN_EMAILS` | Comma-separated admin emails | (none) |
-| `HTTPS_ONLY` | Set to `1` when served over HTTPS (secure cookies) | `0` |
+| Click through the interface with example courses | [Local demo](#local-demo-no-credentials) | None |
+| Run automated checks or contribute code | [Tests](#tests) | None |
+| Use real courses and the AI chatbot | [Full local setup](#full-local-setup) | Google OAuth, a permitted Google account, and an AI provider key; HarvardKey for Q reports |
 
-To use GPT, set these values in `app/.env` and restart the server:
+## Install
+
+The commands below use a macOS/Linux shell. Install [Git](https://git-scm.com/downloads) and
+[uv](https://docs.astral.sh/uv/getting-started/installation/) first. Use Python 3.12 to match CI;
+uv downloads it if needed. Node.js 22 is needed only for the JavaScript tests, not to serve the app.
+
+```bash
+git clone https://github.com/soapytofu/qurated.git
+cd qurated
+uv sync --project app --locked --python 3.12
+```
+
+This creates `app/.venv` with the app and development dependencies. There is no frontend build or
+`npm install` step. **Run all subsequent command blocks from the repository root** unless a block
+explicitly changes directory; parenthesized blocks return you to the root when finished.
+
+If uv selects a broken system/Conda Python (for example, pytest crashes importing `readline`), repeat
+the sync command with `--python /absolute/path/to/python3.12` pointing to a working Python 3.12 installation.
+
+## Local demo (no credentials)
+
+After installing, run:
+
+```bash
+LLM_PROVIDER=anthropic SEARCH_QUERY_EXPANSION=0 HTTPS_ONLY=0 PYTHONPATH=app:tests \
+  app/.venv/bin/uvicorn playtest_app:app --host 127.0.0.1 --port 8766
+```
+
+Open **http://127.0.0.1:8766**. You should see **Demo Student** and synthetic courses. Try Browse,
+filters, course details, favorites, preferences, and a course question. Replies are mocked; this tests
+the interface, not real AI quality or Harvard sign-in. Demo account data is temporary. Stop with `Ctrl+C`.
+
+The demo bypasses authentication for local testing. Keep it bound to `127.0.0.1`; do not deploy it or
+expose it through a public tunnel. For real users, run `server:app` as described below.
+
+## Full local setup
+
+### 1. Configure the app
+
+```bash
+cp -n app/.env.example app/.env
+app/.venv/bin/python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+Do not overwrite an existing `.env`. Paste the generated value into `SESSION_SECRET`, then edit
+`app/.env` with your Google client ID and **one** provider's API key. For example, using OpenAI:
 
 ```dotenv
 LLM_PROVIDER=openai
-OPENAI_API_KEY=your-openai-api-key
+OPENAI_API_KEY=replace-with-your-key
 OPENAI_MODEL=gpt-4.1-mini
+GOOGLE_CLIENT_ID=replace-with-your-client-id.apps.googleusercontent.com
+SESSION_SECRET=replace-with-the-generated-random-value
+ALLOWED_EMAIL_DOMAINS=college.harvard.edu
+SEARCH_QUERY_EXPANSION=0
+HTTPS_ONLY=0
 ```
 
-To switch back, set `LLM_PROVIDER=anthropic` and supply `ANTHROPIC_API_KEY`.
-You can keep both keys locally; chat sends requests only to the selected provider.
-Both providers use the same retrieval, privacy checks, and validated course cards.
-For course discovery, a bounded model call expands conversational interests into up to two
-additional keyword queries. The original query remains, and results are interleaved.
-The expansion cannot change hard filters or course identities; timeouts or malformed output
-fall back to keyword search. This adds latency and API usage. Exact course lookups skip expansion.
-The search still uses locally imported catalog data, not live web browsing or vector search.
-OpenAI uses the [Responses API](https://developers.openai.com/api/docs/guides/streaming-responses)
-with strict structured output and `store=False`. OpenAI costs are not estimated in the
-server log; check your provider dashboard for actual usage. The offline
-`tag_courses.py` batch tool and legacy experiments still use Anthropic.
+Alternatively, set `LLM_PROVIDER=anthropic` and fill in `ANTHROPIC_API_KEY`. There is no automatic provider
+fallback. Model access and API billing belong to your provider account; the repository supplies no keys
+or credits. Live chat sends the question, relevant context, and selected course excerpts to that provider.
 
-### 2. Get the data
-```bash
-cd qscrape
-# Q reports (needs your HarvardKey)
-uv run scrape.py login                                       # sign in with HarvardKey + Duo in the Chrome window
-uv run scrape.py index                                       # list every report for every term
-uv run scrape.py reports                                   # all indexed terms; resumable
+Create a Google OAuth **Web application** client using the [sign-in walkthrough](docs/google-signin.md)
+or [Google's setup guide](https://developers.google.com/identity/gsi/web/guides/get-google-api-clientid).
+Add both `http://localhost` and `http://localhost:8765` as authorized JavaScript origins. Copy the **client
+ID**, not the client secret. The app uses a JavaScript callback, so this setup needs no redirect URI.
+Configure the consent screen and test-user access as applicable to your Google project.
 
-# Course catalog (public, no login)
-uv run catalog.py list                                       # every FAS section, one subject at a time (~20 min)
-uv run catalog.py details                                    # one detail page per course (~2 h, resumable)
+By default, real sign-in requires a verified `@college.harvard.edu` address with a matching Google
+Workspace domain claim. The Google account that owns your OAuth project can be different from the
+account used to sign in to Qurated.
 
-# Tags (about $1 for ~1,600 courses via the Batches API)
-cd ../app
-uv run tag_courses.py --all
-```
-Everything is resumable. If your HarvardKey session expires, run `uv run scrape.py login` again and re-run the same command.
+### 2. Load course data
 
-### 3. Run
-```bash
-cd app
-uv run uvicorn server:app --reload --host 127.0.0.1 --port 8765
-```
-Open **http://localhost:8765** (use `localhost`, which must match your Google OAuth origin) and sign in.
-The server picks up newly scraped data and tags automatically, with no restart needed.
+A fresh clone has no real courses. Choose an authorized existing snapshot or import the data yourself.
 
-### Refreshing each term
-```bash
-cd qscrape && uv run catalog.py list && uv run catalog.py details      # new catalog
-uv run scrape.py login && uv run scrape.py index && uv run scrape.py reports --term "<new term>"
-cd ../app && uv run tag_courses.py --all                                # tag newly reviewed courses
+**Existing snapshot:** place these files at the same repository-relative paths. Catalog-only browsing
+works without Q reports; ratings and student comments require the reports. Tags are optional.
+
+```text
+qscrape/data/catalog/sections.jsonl
+qscrape/data/catalog/details/*.json
+qscrape/data/reports/*.json
+app/data/tags.json
 ```
 
----
+Copy only the course files you are authorized to use. Do not bundle someone else's `.env`,
+`.browser-profile`, or student account database with a snapshot.
 
-## Project structure
-```
-qscrape/               offline data collection
-  scrape.py            Q reports: HarvardKey login, index, download (Playwright)
-  parse.py             Q report HTML → structured JSON
-  catalog.py           my.harvard catalog: sections + course details
-app/                   the web app
-  server.py            FastAPI: Google auth, accounts API, chat endpoint (SSE), feedback
-  pipeline.py          fast answer pipeline: plan → retrieve → one streamed Claude call
-  courses.py           CourseDB: merges Q + catalog + tags; BM25 search and filters
-  db.py                SQLite store for favorites, courses taken, preferences
-  tag_courses.py       Claude Haiku tagging via the Batches API
-  experiments/bench.py latency / cost / quality benchmark with an LLM judge
-  static/              frontend: sign-in page, chat UI, course cards, account drawers
-docs/google-signin.md  Google OAuth setup walkthrough
-```
-
-Local-only, gitignored folders: `qscrape/data/` (scraped data), `app/data/` (tags, student accounts,
-feedback), `.env`, and `.browser-profile/` (your saved HarvardKey session).
-
-## Operating notes
-See **[docs/MAINTENANCE.md](docs/MAINTENANCE.md)** for the full maintenance and scaling plan: roles, the per-term
-refresh runbook, cost model, usage limits, and the path to official data access.
-
-- **Costs:** about 1¢ per answer (Claude Sonnet 5.5) plus about 0.04¢ for the occasional Haiku pre-check. Cost is logged on the server, never shown to students. Set a monthly spend limit in the Anthropic Console as well.
-- **Feedback:** students send it from the speech-bubble button. Read it with `cat app/data/feedback.jsonl`. Emails are only saved if the student opts in.
-- **Back up** `app/data/` (student accounts) if you move machines.
-- **Slow responses (15–20s) on some Wi-Fi networks:** the server already forces IPv4 for API calls, because some networks' IPv6 routes hang for about 16s. If you see this with another HTTP client, check `curl -6 https://api.anthropic.com`.
-
-## Credits
-Built for the Harvard Undergraduate Association. Not an official Harvard University service.
-Course data © its respective owners. Q reports courtesy of the Harvard FAS Office of Undergraduate Education.
-
-
-## Review, guardrails, and tests
-
-See [the code review](docs/CODE_REVIEW.md) for prioritized findings, fixes, limitations and a live safety-evaluation checklist.
+**Public catalog import:** install the scraper dependencies, then run both passes in order:
 
 ```bash
-uv sync --project app --locked
+uv sync --project qscrape --locked --python 3.12
+(
+  cd qscrape
+  uv run --locked catalog.py list
+  uv run --locked catalog.py details
+)
+```
+
+This reads public my.harvard pages without HarvardKey or paid AI calls. A full import can take hours;
+the details pass skips files already downloaded and can be rerun. Its configured catalog terms are
+currently **Fall 2026 and Spring 2027**. These are separate from historical Q-guide terms.
+
+**Q-report import:** requires installed Google Chrome, your own authorized HarvardKey access, and Duo.
+Install the scraper dependencies above, then:
+
+```bash
+(
+  cd qscrape
+  uv run --locked scrape.py login
+  uv run --locked scrape.py index
+  uv run --locked scrape.py reports
+)
+```
+
+Complete sign-in in the Chrome window. Omitting `--terms` on `index` discovers every available Q term;
+omitting `--term` on `reports` downloads **all indexed terms**, not just two semesters. Downloads are
+resumable. If authentication expires, rerun `login`, then resume. Keep the saved session and reports private.
+
+**Optional course tags:** `uv run --locked tag_courses.py --all` from `app/` generates summaries/tags
+for previously untagged courses. It requires an **Anthropic** key and makes paid batch API calls even
+if chat uses OpenAI. Skip this step for an initial setup; it does not refresh already tagged courses.
+
+### 3. Start the real app
+
+```bash
+(
+  cd app
+  uv run --locked uvicorn server:app --reload --host 127.0.0.1 --port 8765
+)
+```
+
+Open **http://localhost:8765**, sign in, and open **Browse**. Confirm the data coverage and course details
+before trying a chat question. Browse does not call an AI provider. A normal AI-generated answer uses
+your API account and may incur charges. Stop the server with `Ctrl+C`.
+
+Course files are checked for changes on relevant requests, at most once every five seconds. Restarting
+also rebuilds the index. Changes to `.env` require a restart.
+
+### Configuration reference
+
+Start with [app/.env.example](app/.env.example); values below describe the current code defaults.
+
+| Variable | Default / purpose |
+|---|---|
+| `LLM_PROVIDER` | `anthropic`; choose `anthropic` or `openai` |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Key for the selected chat provider; tagging always needs Anthropic |
+| `OPENAI_MODEL` | `gpt-4.1-mini`; model used by the OpenAI adapter |
+| `OPENAI_ROUTER_MODEL` | Optional routing model; defaults to `OPENAI_MODEL` |
+| `GOOGLE_CLIENT_ID` | Your Google OAuth Web client ID |
+| `SESSION_SECRET` | Set a strong, stable random value; otherwise restarts invalidate sessions |
+| `ALLOWED_EMAIL_DOMAINS` | `college.harvard.edu`; comma-separated permitted Workspace domains |
+| `SEARCH_QUERY_EXPANSION` | `0`: deterministic retrieval; `1` enables extra AI query rewrites and API usage |
+| `DAILY_QUESTION_LIMIT` | `40` per student; daily counts persist in SQLite |
+| `PER_MINUTE_QUESTION_LIMIT` | `6` per student |
+| `DAILY_BUDGET_USD` | `20`; checks recorded estimated spend, **not an OpenAI spending cap** |
+| `ADMIN_EMAILS` | Optional comma-separated addresses that can see the admin spend summary |
+| `HTTPS_ONLY` | `0` for local HTTP; set `1` behind production HTTPS |
+| `QURATED_DB_PATH` | Defaults to `app/data/qurated.db`; set in the process environment **before startup**, not just `.env` |
+
+OpenAI costs are currently recorded as unavailable rather than estimated, so `DAILY_BUDGET_USD` cannot
+limit OpenAI spend. Even tracked estimates are not a guaranteed billing cap. Monitor your provider
+dashboard and configure provider-side spending controls separately.
+
+## Tests
+
+After the install step, run the default regression suite and JavaScript checks:
+
+```bash
 app/.venv/bin/python -m pytest tests -q
-node --check app/static/app.js
+for source in app/static/*.js; do
+  node --check "$source" || exit
+done
 node --test tests/frontend.test.cjs
 ```
 
-Tests use synthetic course records, mocked model replies, and a temporary account database. They require no
-Google credentials, private Q reports, browser installation, or paid model calls. CI runs these same checks.
-Use `uv sync --project app --locked --no-dev` for a production environment.
+These use synthetic fixtures, mocked model replies, and a temporary account database. No Google login,
+private Q data, or paid model calls are required. Browser tests are skipped by default; enable them with:
 
-Daily chat quotas are stored in SQLite. Conversation context is process-local, limited to three exchanges,
-and expires after one idle hour (removed on the next chat acquisition). At most 1,000 conversations are kept
-per process. Use one worker for consistent follow-ups, or introduce shared conversation storage before scaling
-across workers. `QURATED_DB_PATH` optionally overrides the account database path.
+```bash
+app/.venv/bin/python -m playwright install chromium
+RUN_BROWSER_TESTS=1 app/.venv/bin/python -m pytest tests/test_ui*.py -q
+```
 
-### Running on another computer
+On Linux, use `playwright install --with-deps chromium` if browser system libraries are missing.
+Alternatively, set `QURATED_TEST_BROWSER` to an installed Chrome executable. CI runs both suites via
+[the workflow](.github/workflows/tests.yml). These checks do not validate live Google/Harvard login,
+provider availability, or the quality of real AI answers.
 
-Git does not include the local course catalog, Q reports, accounts, or secrets. Each checkout
-needs its own `app/.env` and course data. Import the public catalog using the commands above,
-or copy `qscrape/data/catalog/sections.jsonl` and `qscrape/data/catalog/details/` from a prepared
-checkout into the same paths in the new checkout. A public-catalog ZIP with those paths can
-be extracted from the repository root. Restart the app or allow its automatic data reload.
+## FAQ and troubleshooting
 
-A partial catalog snapshot may lack requirement details for some courses. Q reports require
-a separate authorized HarvardKey import; omitting `--term` imports all indexed semesters.
-Do not transfer `.env`, `.browser-profile`, or `app/data/qurated.db` as part of catalog setup.
-No Q reviews in the loaded data does not establish that a course is new.
+**Can I test without a Harvard account, API key, or course data?**
 
-### Predictable course retrieval
+Yes: use the local demo or automated tests. For real data, you can import the public catalog without
+HarvardKey, but the real app still requires permitted Google sign-in. Q reports require authorized access.
 
-By default, course search uses fixed topic synonyms, catalog filters, and BM25 keyword ranking.
-For example, CS + design also searches human-computer interaction and user interfaces. Known
-algorithm/circuit/compiler design requests keep their specific meaning. Topic families are versioned
-in `app/search_planner.py`; unfamiliar topics retain their literal keywords. AI-written answers can
-still vary, but candidate retrieval is repeatable for the same loaded data, request, history,
-preferences, and filters. Equal-ranked courses use ascending course code as a stable tie-breaker.
+**Why is Browse empty, or why are ratings missing?**
 
-`SEARCH_QUERY_EXPANSION=1` explicitly enables additional AI query rewrites and makes candidate
-retrieval non-deterministic. Existing installations with that setting should change it to `0` and
-restart to use deterministic retrieval. No AI rewrite is required for the default search path.
+A clone does not include course data. Check the paths above and import both catalog passes. Catalog-only
+courses have no Q ratings; missing data does not mean a zero score or prove that a course is new.
+Clear strict rating/workload filters when investigating missing results.
 
-Subject, Gen Ed, term, and workload constraints are enforced before ranking, including for explicitly
-named courses. A minimum Q score excludes missing values. A failed topic search does not silently
-fall back to unrelated courses, and workload limits are not silently relaxed. “Light”, “easy”, and
-“manageable” currently mean at most six reported hours/week, or a stricter saved/selected cap.
+**Which Q guides are included, and how does sorting work?**
 
-Chat recognizes explicit constraints such as “Spring 2027”, “under 5 hours”, “at most 6 hours per
-week”, and “effective lectures rated at least 4.5”. “Under” is strict; “at most” includes the
-boundary. Numerical ratings average every available loaded Q report, including separate sections. Each report contributes equally; missing scores are omitted per metric. The Q-guide term filter limits these averages to one historical term and is separate from the upcoming catalog term filter. All displayed Q metrics support ascending and descending sorting, with unavailable values last. Requested
-thresholds intersect selected filters instead of weakening them. Unsupported years, multiple terms,
-out-of-range scores, and conflicting selected terms get a clarification before answer generation.
-Every course search displays an expandable **Search interpreted as** summary with its effective
-constraints and keyword queries. This makes interpretation inspectable; unsupported phrasing still
-needs rewording or the explicit Filters controls.
+Every valid report loaded from `qscrape/data/reports/` is included. There is no fixed two-term limit or
+bundled report count. Each course's metric averages all its loaded reports, including separate sections,
+with equal weight per report; missing values are omitted per metric. Use the Q-guide term filter to
+restrict the average to one historical term. It is separate from the catalog's offering-term filter.
+All displayed Q metrics support ascending/descending sorting, with missing values last.
+
+**Why does Google sign-in fail?**
+
+Check `GOOGLE_CLIENT_ID`, restart after editing `.env`, and open exactly `http://localhost:8765` with
+that origin registered in Google. Keep `HTTPS_ONLY=0` for local HTTP. A 403 usually means the verified
+email or Workspace domain is not allowed. Adding `gmail.com` alone will not permit personal Gmail
+accounts because the app also requires a matching Workspace `hd` claim. See the
+[sign-in troubleshooting table](docs/google-signin.md#troubleshooting) for OAuth or administrator blocks.
+
+**Why does the chatbot report a key error or usage limit?**
+
+Check that `LLM_PROVIDER` matches the key you filled in, restart, and verify API access/billing with
+that provider. App question limits and provider limits are separate; Browse still works without AI.
+Daily app quotas reset at midnight in Boston when timezone data is available.
+
+**Why did a request return no courses or ask for clarification?**
+
+Hard filters intersect rather than silently relax. Inspect **Search interpreted as**, then clear a
+conflicting term, rating, schedule, or workload constraint. Currently, “light,” “easy,” and “manageable”
+impose at most six reported hours/week, or a stricter selected/saved cap. Unsupported years or
+contradictory constraints can require clarification. AI wording can vary even with deterministic retrieval.
+
+**How do I refresh data?**
+
+Rerun the catalog listing and Q index/report commands for the supported terms. Detail/report downloads
+skip existing files, and tagging skips already tagged courses, so rerunning does not guarantee that
+changed upstream content is refreshed. Plan deliberate regeneration where needed. Adding a future
+catalog term also requires updating term handling in the app, not just importing new files.
+
+**What persists, and what should I back up?**
+
+Favorites, taken courses, preferences, daily counts, and recorded spend live in SQLite at
+`app/data/qurated.db` by default. Feedback lives in `app/data/feedback.jsonl`; its email field is included
+only when the sender opts in. Back up account data privately using SQLite's backup tools or while the
+server is stopped. Chat history is process-local, retains three exchanges, and expires after an idle
+hour; it is lost on restart. Keep `.env`, reports, tags, and scraper sessions private too.
+
+**Can I share the GitHub link as a live app?**
+
+The link shares source code; it does not run the Python backend. A deployment needs a Python host,
+persistent storage, environment secrets, and privately provisioned course data. Use one Uvicorn worker
+for consistent follow-ups, HTTPS with `HTTPS_ONLY=1`, and register the deployed origin in Google OAuth.
+Omit `--reload` in production. The [deployment files](deploy/) are VM-specific examples, not a one-click
+host: review their paths and assumptions before running them. The demo is never a production entry point.
+
+**How do I report a bug or contribute?**
+
+Open an [issue](https://github.com/soapytofu/qurated/issues) with steps, expected/actual behavior, and
+your browser or environment; use synthetic examples and redact private data. For code changes, create
+a branch, run the relevant checks above, and open a pull request. Arrange sensitive security reports
+privately with the maintainer; do not publish keys, session cookies, student records, or private Q comments.
+
+## How it works and where to look
+
+Python/FastAPI serves a plain JavaScript frontend. The app merges local catalog records, Q reports,
+and optional tags into an in-memory BM25 index, applies course constraints, then asks the selected
+provider for a structured answer. The pipeline checks recommendations and quoted evidence before
+display; these checks do not guarantee that every free-text claim is correct. Browse and sorting use
+the local index directly.
+
+| Path | Purpose |
+|---|---|
+| `app/server.py`, `app/db.py`, `app/chat_state.py` | API, Google sign-in, account storage, conversation state |
+| `app/courses.py`, `app/search_planner.py` | Course loading, metric aggregation, filters, retrieval |
+| `app/pipeline.py`, `app/llm.py`, `app/*constraints.py` | Answer generation, provider adapter, request/evidence checks |
+| `app/static/` | Sign-in, chat, browsing, account controls; no build step |
+| `qscrape/` | Catalog and authorized Q-report import tools |
+| `tests/`, `tests/playtest_app.py` | Regression suites and the local synthetic demo |
+| `deploy/` | Example VM service and reverse-proxy configuration |
+
+See [the maintenance plan](docs/MAINTENANCE.md) and [the earlier code review](docs/CODE_REVIEW.md) for
+background and operating considerations. Their historical counts, estimates, and validation notes may
+predate the current implementation; inspect your loaded data and current provider billing for live values.
+
+## Credits
+
+Built for the Harvard Undergraduate Association. Original contributor attribution is preserved in Git
+history. Not an official Harvard University service. Course data belongs to its respective owners;
+Q reports are provided by the Harvard FAS Office of Undergraduate Education.
