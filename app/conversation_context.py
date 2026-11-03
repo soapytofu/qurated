@@ -1,9 +1,11 @@
 """Bounded search/discussion state, independent of the model's six-message history."""
 from copy import deepcopy
 import re
+import uuid
 
 MAX_SHOWN = 500
 MAX_DISCUSSION = 30
+MAX_FOLLOW_UP_CONTEXTS = 20
 SOCIAL = re.compile(r"^\s*(?:thanks?(?: you)?|thank you|great(?:,? thanks)?|okay|ok|hello|hi|bye|"
                     r"sounds good|got it|you're welcome)[!. ]*$", re.I)
 MORE = re.compile(r"\b(?:(?:more|other|different|additional) (?:options|courses|classes|recommendations)|"
@@ -20,7 +22,9 @@ FILLER = set("show give more other different additional options recommendations 
              "okay ok fine works at most fewer than under over take taking want need interested "
              "recommend find suggest me good great interesting any something should would could "
              "per week hours hour hrs hr workload rating ratings rated overall minimum maximum "
-             "with without and or in for of the a an to is it be but are do does then".split())
+             "with without and or in for of the a an to is it be but are do does then "
+             "has have lightest heaviest easiest hardest lighter heavier lowest highest least most "
+             "better best worse worst less demanding effort time".split())
 
 
 def new_context():
@@ -29,6 +33,26 @@ def new_context():
 
 def clean_plan(plan):
     return deepcopy({k: v for k, v in plan.items() if not k.startswith('_')})
+
+
+def save_follow_up(state, context_id=None):
+    """Keep a bounded, server-owned snapshot for the buttons beneath a particular answer."""
+    if not (state.get('course_context') or {}).get('search'):
+        return None
+    snapshots = state.setdefault('follow_up_contexts', {})
+    context_id = context_id or uuid.uuid4().hex
+    snapshots[context_id] = deepcopy({key: state.get(key) for key in ('course_context', 'last', 'history')})
+    while len(snapshots) > MAX_FOLLOW_UP_CONTEXTS:
+        del snapshots[next(iter(snapshots))]
+    return context_id
+
+
+def restore_follow_up(state, context_id):
+    snapshot = state.get('follow_up_contexts', {}).get(context_id)
+    if snapshot is None:
+        return False
+    state.update(deepcopy(snapshot))
+    return True
 
 
 def context_search(message, state):
@@ -158,7 +182,8 @@ def resolve(message, context, parse):
         return {**merged, '_intent': 'more'}
     discussion = context.get('discussion') or {}
     if referent and discussion.get('codes') and not modifiers:
-        merged.update(queries=[], codes=list(discussion['codes'])[:MAX_DISCUSSION])
+        count = 2 if re.search(r'\b(?:top|first) (?:two|2)\b', message, re.I) else MAX_DISCUSSION
+        merged.update(queries=[], codes=list(discussion['codes'])[:count])
         return {**merged, '_intent': 'compare'}
     return {**merged, '_intent': 'amend'}
 

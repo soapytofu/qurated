@@ -323,8 +323,14 @@ def retrieve(db, p, taken=frozenset(), k=10, filters=None):
         # All of Spring 2027 is searchable: when undergrad matches run thin, backfill with graduate courses
         # (many are open to undergrads), ranked after every undergrad match. Every other filter still applies.
         collect(search_all({**filters, "include_grad": True}, undergrad=False))
-    explicit = [db.brief(c["code"], filters=filters) for code in p["codes"][:6]
-                if (c := db.filtered_lookup(code, filters, taken))
+    comparing = p.get('_intent') == 'compare'
+    explicit_limit = conversation_context.MAX_DISCUSSION if comparing else 6
+    if comparing:
+        k = max(k, min(len(p['codes']), explicit_limit))
+    # A previous answer may have included graduate backfill; keep those choices in comparisons.
+    explicit_filters = {**filters, 'include_grad': True} if comparing else filters
+    explicit = [db.brief(c["code"], filters=filters) for code in p["codes"][:explicit_limit]
+                if (c := db.filtered_lookup(code, explicit_filters, taken))
                 and course_evidence.supports_policies(c, p.get("required_policies", []))]
     explicit_codes = {b["code"] for b in explicit}
     cands, identities = [], set()
@@ -534,7 +540,8 @@ def stream_answer(client, db, history, message, preferences, favorites, taken, s
     context = context_line(preferences, favorites, taken, facts)
     content = json.dumps({"request": message, "student_context": context,
                           "active_filters": filters or {}, "candidates": _for_model(cands, message, filters),
-                          "course_discussion": ((state.get("course_context") or {}).get("discussion") or {}).get("codes", [])},
+                          "course_discussion": ([c['code'] for c in cands] if p and p.get('_intent') == 'compare' else
+                                                ((state.get("course_context") or {}).get("discussion") or {}).get("codes", []))},
                          separators=(",", ":"))
     notes = []
     if may_ask and not set(tokenize(" ".join(p["queries"]))) - GENERIC and not (facts or preferences):

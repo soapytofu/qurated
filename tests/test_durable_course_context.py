@@ -77,6 +77,121 @@ def test_comparison_preserves_term_and_explicit_course_choices_win(chat):
     assert state['course_context']['pending']['plan']['codes'] == ['TEST 20', 'TEST 21']
 
 
+@pytest.mark.parametrize('question,count', [
+    ('Which of these has the lightest workload?', 3),
+    ('Which of those is easiest?', 3),
+    ('Compare the top two', 2),
+])
+def test_followup_button_wording_keeps_the_previous_course_set(chat, question, count):
+    db, ask, captured = chat
+    first, state = ask(BASE)
+    shown = [c['code'] for c in cards(first)]
+    state['history'].clear()  # Follow-ups must not depend on the model's short history.
+    events, _ = ask(question)
+    assert [c['code'] for c in cards(events)] == shown[:count]
+    assert [c['code'] for c in captured[-1]['candidates']] == shown[:count]
+    assert captured[-1]['course_discussion'] == shown[:count]
+    assert captured[-1]['active_filters']['term'] == '2026 Fall'
+    assert captured[-1]['active_filters']['gen_ed'] == 'Ethics and Civics'
+    assert captured[-1]['active_filters']['workload_under'] == 5
+    assert state['last']['plan']['queries'] == ['']
+    more = pipeline.more_like(db, state, [])
+    assert more and not set(more) & set(shown)
+    assert all(db.lookup(code)['title'] == 'Ethics and Technology' for code in more)
+
+
+def test_comparison_keeps_graduate_backfill_and_display_order(chat):
+    db, ask, captured = chat
+    for i, course in enumerate(db.courses.values()):
+        course['catalog']['level'] = 'Graduate Course' if i else 'Undergraduate'
+    first, _ = ask(BASE)
+    shown = [c['code'] for c in cards(first)]
+    assert len(shown) == 3 and cards(first)[1]['grad_level']
+    compared, _ = ask('Compare the top two')
+    assert [c['code'] for c in captured[-1]['candidates']] == shown[:2]
+    assert [c['code'] for c in cards(compared)] == shown[:2]
+
+
+@pytest.fixture
+def http_chat(chat, monkeypatch):
+    db, _, captured = chat
+    monkeypatch.setattr(server, 'db', db)
+    monkeypatch.setattr(server, 'chat_state', ChatState())
+    monkeypatch.setattr(server, '_maybe_reload', lambda: None)
+    monkeypatch.setattr(server, 'needs_q_data', lambda *args: (True, 0))
+    monkeypatch.setattr(server, 'MINUTE_LIMIT', 100)
+    monkeypatch.setattr(server.store, 'spend', lambda *args: (0, 0))
+    monkeypatch.setattr(server.store, 'add_spend', lambda *args: None)
+    monkeypatch.setattr(server.store, 'reserve_question', lambda *args: True)
+    server.app.dependency_overrides[server.current_user] = lambda: {'email': 'followup@example.invalid'}
+    try:
+        with TestClient(server.app) as client:
+            def ask(message, session=None, context=None, filters=None):
+                response = client.post('/api/chat', json={'message': message, 'session_id': session,
+                    'follow_up_context': context, 'filters': filters or {}})
+                assert response.status_code == 200
+                events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]
+                context_id = next((e['id'] for e in events if e['type'] == 'follow_up_context'), None)
+                return events, response.headers['X-Session-Id'], context_id
+            yield client, ask, captured
+    finally:
+        server.app.dependency_overrides.clear()
+
+
+def test_buttons_reference_their_own_answer_and_more_extends_that_set(http_chat):
+    client, ask, captured = http_chat
+    first, session, context = ask(BASE)
+    shown = [c['code'] for c in cards(first)]
+    assert context
+    ask('Film courses in Spring 2027 at most 8 hours', session)
+    events, _, _ = ask('Which of these has the lightest workload?', session, context,
+                       {'term': '2027 Spring'})
+    assert [c['code'] for c in cards(events)] == shown
+    assert captured[-1]['active_filters']['term'] == '2026 Fall'
+    assert captured[-1]['active_filters']['workload_under'] == 5
+    more = client.post('/api/more', json={'session_id': session, 'follow_up_context': context})
+    assert more.status_code == 200
+    added = [c['code'] for c in more.json()['cards']]
+    assert added and not set(added) & set(shown)
+    assert all(c['title'] == 'Ethics and Technology' and c['term'] == '2026 Fall' for c in more.json()['cards'])
+    ask('Which of these has the lightest workload?', session, context)
+    assert [c['code'] for c in captured[-1]['candidates']] == shown + added
+    events, _, _ = ask('Compare the top two', session, context)
+    assert [c['code'] for c in cards(events)] == shown[:2]
+    again = client.post('/api/more', json={'session_id': session, 'follow_up_context': context}).json()['cards']
+    assert again and not {c['code'] for c in again} & set(shown + added)
+
+
+def test_expired_or_other_chat_context_never_silently_uses_the_latest_search(http_chat):
+    client, ask, captured = http_chat
+    _, session, context = ask(BASE)
+    count = len(captured)
+    events, other_session, _ = ask('Compare the top two', context=context)
+    assert other_session != session
+    assert len(captured) == count
+    assert any('expired' in e.get('text', '') for e in events)
+    response = client.post('/api/more', json={'session_id': other_session, 'follow_up_context': context})
+    assert response.status_code == 409 and 'expired' in response.json()['detail']
+
+
+def test_answer_snapshots_are_bounded_and_do_not_mutate_earlier_context(chat, monkeypatch):
+    _, ask, _ = chat
+    _, state = ask(BASE)
+    monkeypatch.setattr(conversation_context, 'MAX_FOLLOW_UP_CONTEXTS', 2)
+    original = conversation_context.save_follow_up(state)
+    ask('Film courses at most 8 hours')
+    second = conversation_context.save_follow_up(state)
+    assert conversation_context.restore_follow_up(state, original)
+    assert state['course_context']['search']['message'] == BASE
+    state['course_context']['discussion']['codes'].clear()
+    assert conversation_context.restore_follow_up(state, original)
+    assert state['course_context']['discussion']['codes']
+    conversation_context.save_follow_up(state)
+    assert len(state['follow_up_contexts']) == 2
+    assert not conversation_context.restore_follow_up(state, original)
+    assert conversation_context.restore_follow_up(state, second)
+
+
 @pytest.mark.parametrize('change', ['Show me more options about film at most 8 hours',
                                    'Recommend film courses instead of these at most 8 hours',
                                    'More options in Aesthetics and Culture at most 8 hours'])

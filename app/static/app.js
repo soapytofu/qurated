@@ -245,7 +245,7 @@ function makeProgress(bot) {
   return api;
 }
 
-async function send(message) {
+async function send(message, followUpContext = null) {
   message = message.trim();
   if (!message || busy) return;
   cancelBrowseWork();
@@ -269,7 +269,7 @@ async function send(message) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       // Account preferences and favorites are read by the server, not supplied by the browser.
-      body: JSON.stringify({ session_id: sessionId, message, filters: activeFilters() }),
+      body: JSON.stringify({ session_id: sessionId, message, filters: activeFilters(), follow_up_context: followUpContext }),
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
@@ -293,6 +293,8 @@ async function send(message) {
           if (!textEl) newText();
           text += ev.delta;
           textEl.innerHTML = markdown(text);
+        } else if (ev.type === "follow_up_context") {
+          bot.dataset.followUpContext = ev.id;
         } else if (ev.type === "search_plan") {
           const details = document.createElement("details");
           details.className = "search-plan";
@@ -335,7 +337,7 @@ async function send(message) {
           const row = document.createElement("div");
           row.className = "followups clarify";
           row.innerHTML = ev.options.map((o) => `<button class="chip-btn">${esc(o)}</button>`).join("");
-          $$("button", row).forEach((b) => b.addEventListener("click", () => send(b.textContent)));
+          $$("button", row).forEach((b) => b.addEventListener("click", () => send(b.textContent, bot.dataset.followUpContext)));
           bot.insertBefore(row, status);
         } else if (ev.type === "memory" && ev.facts.length) {
           addMemoryNote(bot, status, ev.facts);
@@ -1091,12 +1093,13 @@ function addFollowUps(turnEl) {
   $$("button", row).forEach((b) => b.addEventListener("click", () => {
     if (b.dataset.browse) { toggleFilters(true); setActiveNav("nav-browse"); }
     else if (b.dataset.more) showMore(turnEl, b);
-    else send(b.textContent);
+    else send(b.textContent, turnEl.dataset.followUpContext);
   }));
   turnEl.appendChild(row);
 }
 // Next matches for the same search, straight from the index: instant and no AI cost.
 async function showMore(turnEl, btn) {
+  if (busy || !sessionId) return;
   const generation = browseGeneration, requestSession = sessionId;
   btn.disabled = true;
   btn.textContent = "Loading…";
@@ -1109,8 +1112,11 @@ async function showMore(turnEl, btn) {
   const current = () => generation === browseGeneration && requestSession === sessionId && turnEl.isConnected;
   try {
     const response = await api("/api/more", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: requestSession }) });
-    if (!response.ok) throw new Error("more failed");
+      body: JSON.stringify({ session_id: requestSession, follow_up_context: turnEl.dataset.followUpContext }) });
+    if (!response.ok) {
+      const problem = await response.json().catch(() => ({}));
+      throw new Error(typeof problem.detail === 'string' ? problem.detail : "Couldn't load more courses. Please try again.");
+    }
     const r = await response.json();
     if (!current()) return;
     const grid = $(".cards", turnEl);
@@ -1126,7 +1132,7 @@ async function showMore(turnEl, btn) {
     btn.textContent = "Show more like these";
   } catch (err) {
     if (!current()) return;
-    status.textContent = "Couldn't load more courses. Please try again.";
+    status.textContent = err.message || "Couldn't load more courses. Please try again.";
     btn.disabled = false; btn.textContent = "Retry more courses";
   } finally {
     if (!current() && turnEl.isConnected) { btn.disabled = false; btn.textContent = "Show more like these"; }

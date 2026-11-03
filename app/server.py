@@ -26,6 +26,7 @@ from starlette.middleware.sessions import SessionMiddleware
 import db as store
 import guard
 import pipeline
+import conversation_context
 import llm
 from guardrails import has_sensitive_text, PRIVACY_REPLY
 from chat_state import ChatState
@@ -419,7 +420,7 @@ def chat_stream(session_id, message, preferences, favorites, taken=(), use_prefe
     yield sse({"type": "done"})
 
 
-def fast_chat_stream(session_key, message, preferences, favorites, taken=(), filters=None):
+def fast_chat_stream(session_key, message, preferences, favorites, taken=(), filters=None, follow_up_context=None):
     """Production path: router -> server-side retrieval -> one streamed provider call (see pipeline.py)."""
     entry = chat_state.acquire(session_key)
     if entry is None:
@@ -427,6 +428,12 @@ def fast_chat_stream(session_key, message, preferences, favorites, taken=(), fil
         yield sse({"type": "done"})
         return
     try:
+        if follow_up_context:
+            if not conversation_context.restore_follow_up(entry, follow_up_context):
+                yield sse({"type": "error", "text": "This earlier search has expired. Please repeat your original question to continue it."})
+                yield sse({"type": "done"})
+                return
+            filters = entry['course_context']['search'].get('selected_filters', {})
         yield from _fast_chat_stream(entry, message, preferences, favorites, taken, filters)
     finally:
         chat_state.release(session_key)
@@ -461,6 +468,8 @@ def _fast_chat_stream(entry, message, preferences, favorites, taken, filters):
     except Exception as e:
         print(f"[chat] failed: {type(e).__name__}", flush=True)
         yield sse({"type": "error", "text": "Unable to answer right now. Please try again shortly."})
+    if context_id := conversation_context.save_follow_up(entry):
+        yield sse({"type": "follow_up_context", "id": context_id})
     yield sse({"type": "done"})
 
 
@@ -591,6 +600,7 @@ class ChatRequest(BaseModel):
     preferences: dict | None = None
     favorites: list[str] = Field(default_factory=list, max_length=30)
     filters: dict | None = None
+    follow_up_context: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 
     @field_validator("message")
     @classmethod
@@ -695,12 +705,13 @@ def chat(req: ChatRequest, user=Depends(current_user)):
     favs = [f["code"] for f in store.favorites(email)][:30]
     taken = store.taken(email)
     return StreamingResponse(fast_chat_stream((email, sid), req.message, prefs, favs, taken,
-                                              clean_filters(req.filters)),
+                                              clean_filters(req.filters), req.follow_up_context),
                              media_type="text/event-stream", headers={"X-Session-Id": sid})
 
 
 class MoreRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    follow_up_context: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 
 
 @app.post("/api/more")
@@ -711,8 +722,16 @@ def more(req: MoreRequest, user=Depends(current_user)):
     if entry is None:
         raise HTTPException(409, "This chat is busy. Please try again shortly.")
     try:
+        if req.follow_up_context and not conversation_context.restore_follow_up(entry, req.follow_up_context):
+            raise HTTPException(409, "This earlier search has expired. Please repeat your original question to continue it.")
         _maybe_reload()
+        previous = ((entry.get('course_context') or {}).get('discussion') or {}).get('codes', [])
         codes = pipeline.more_like(db, entry, store.taken(user["email"]))
+        if req.follow_up_context:
+            # These cards are appended to the same answer, so its comparisons cover the full visible set.
+            entry['course_context']['discussion'] = {'codes': list(dict.fromkeys(previous + codes))[:conversation_context.MAX_DISCUSSION],
+                                                     'filters': dict(entry['last']['filters'])}
+            conversation_context.save_follow_up(entry, req.follow_up_context)
         filters = (entry.get("last") or {}).get("filters", {})
         return {"cards": [c for code in codes if (c := db.card(code, filters=filters))]}
     finally:

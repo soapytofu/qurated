@@ -39,3 +39,37 @@ def test_chat_errors_identify_the_failed_request_field(page, status, body, expec
     page.locator("#ask").click()
     expect(page.locator(".error")).to_contain_text(expected)
     expect(page.locator("#ask")).to_be_enabled()
+
+
+def test_followup_buttons_use_the_clicked_answer_and_original_search(page):
+    requests = []
+    page.on('request', lambda r: requests.append((r.url, r.post_data_json))
+            if r.url.endswith(('/api/chat', '/api/more')) else None)
+    page.locator('#input').fill('Computing courses in Fall 2026')
+    page.locator('#ask').click()
+    first = page.locator('.turn.bot').nth(0)
+    expect(first.locator('.card')).to_have_count(3)
+    expect(first.locator('.followups')).to_be_visible()
+    original = first.locator('.card').evaluate_all('(cards) => cards.map(c => c.dataset.code)')
+    context = first.get_attribute('data-follow-up-context')
+    assert context
+    page.locator('#input').fill('Ethics courses in Spring 2027')
+    page.locator('#ask').click()
+    expect(page.locator('.turn.bot').nth(1).locator('.card')).to_have_count(3)
+    expect(page.locator('#ask')).to_be_enabled()
+    first.get_by_role('button', name='Which of these has the lightest workload?', exact=True).click()
+    followup = page.locator('.turn.bot').nth(2)
+    expect(followup.locator('.card')).to_have_count(3)
+    expect(page.locator('#ask')).to_be_enabled()
+    assert followup.locator('.card').evaluate_all('(cards) => cards.map(c => c.dataset.code)') == original
+    expect(followup.locator('.card .term')).to_have_text(['2026 Fall'] * 3)
+    assert requests[-1][1]['follow_up_context'] == context
+    first.get_by_role('button', name='Compare the top two', exact=True).click()
+    compared = page.locator('.turn.bot').nth(3)
+    expect(compared.locator('.card')).to_have_count(2)
+    expect(page.locator('#ask')).to_be_enabled()
+    assert compared.locator('.card').evaluate_all('(cards) => cards.map(c => c.dataset.code)') == original[:2]
+    first.get_by_role('button', name='Show more like these', exact=True).click()
+    expect(first.locator('.card')).to_have_count(9)
+    assert requests[-1][0].endswith('/api/more') and requests[-1][1]['follow_up_context'] == context
+    expect(first.locator('.card .term')).to_have_text(['2026 Fall'] * 9)
