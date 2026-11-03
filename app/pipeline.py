@@ -21,7 +21,7 @@ from accessibility_evidence import label_instructor_availability
 import course_evidence
 
 from catalog_constraints import extract_catalog, merge_catalog, with_catalog_constraints
-from courses import UPCOMING, GEN_EDS, EXTRA_Q_SCORES, tokenize
+from courses import UPCOMING, GEN_EDS, EXTRA_Q_SCORES, tokenize, planning_filters
 from guardrails import MAX_PICKS, POLICY, SAFE_FAILURE, validate_answer, validate_pick
 
 ANSWER_MODEL = "claude-sonnet-5-5"
@@ -51,6 +51,7 @@ SYSTEM = """You are Qurated, the Harvard Undergraduate Association's course advi
 students. You get a student's request plus candidate courses retrieved from Harvard Q reports (past students' \
 ratings, workload in hours/week, reviews) and the Fall 2026 / Spring 2027 my.harvard catalog (terms offered, \
 meeting times, Gen Eds). Course metrics are equal-weight averages of available report scores across all loaded Q terms, or the selected Q-guide term. Missing values are omitted per metric. average_responses_per_report is an average per report, not a total or unique student count; q_report_count counts reports, including sections.
+Availability comes only from the catalog and active term filter. Q report terms are historical review dates, not evidence that a course is offered now. Label ratings and reviews as historical; instructors may differ.
 Be brief: the student sees your picks as cards that already show ratings, workload, tags and meeting times.
 - picks: up to 6 candidates that fit well, best first (usually 4-6 when several fit, fewer if few fit; only \
 candidate codes; if they ask about one specific course, pick just that course; [] if none fit or no course pick is \
@@ -239,7 +240,8 @@ def describe_filters(f):
             if value:
                 parts.append(names.get(key, key))
         else:
-            parts.append(f'{names.get(key, key)} {value:g}' if isinstance(value, (int, float))
+            parts.append('all loaded catalog terms' if key == 'term' and value == 'any' else
+                         f'{names.get(key, key)} {value:g}' if isinstance(value, (int, float))
                          else f'{names.get(key, key)} {value}')
     return "Required: " + "; ".join(parts)
 
@@ -262,7 +264,7 @@ def effective_filters(p, selected=None):
                        ("term", p.get("term") if p.get("term") in UPCOMING else None)):
         if not value:
             continue
-        if filters.get(key) and filters[key] != value:
+        if filters.get(key) and filters[key] != value and not (key == "term" and filters[key] == "any"):
             conflicts.append(f'Your question asks for {value}, but Filters selects {filters[key]}. '
                              'Change your question or the selected filter so they agree.')
         else:
@@ -277,7 +279,7 @@ def effective_filters(p, selected=None):
     for key, value in requested.items():
         combine = max if key.startswith("min_") else min
         filters[key] = combine(filters.get(key, value), value)
-    return filters, conflicts
+    return planning_filters(filters), conflicts
 
 
 def retrieve(db, p, taken=frozenset(), k=10, filters=None):
@@ -288,11 +290,8 @@ def retrieve(db, p, taken=frozenset(), k=10, filters=None):
     filters, conflicts = effective_filters(p, filters)
     if conflicts:
         return []
-    # Over-fetch when a term filter will prune results afterwards (search ranks before the term check).
-    limit = 40 if p["term"] in UPCOMING else 10 + k
-    filters = filters or {}
-    if filters.get("term"):
-        limit = 40
+    # Availability is enforced before ranking; over-fetch for evidence checks and deduplication.
+    limit = max(40, 10 + k)
     include_grad = bool(filters.get("include_grad") or p.get("grad"))
     if include_grad:
         filters = {**filters, "include_grad": True}  # matches() hides grad courses unless this is set
@@ -310,8 +309,6 @@ def retrieve(db, p, taken=frozenset(), k=10, filters=None):
                 if (course_evidence.only_hypothetical_support(course, p["queries"])
                         or not course_evidence.supports_policies(course, p.get("required_policies", []))):
                     continue
-                if p["term"] in UPCOMING and not (isinstance(b["offered"], list) and p["term"] in b["offered"]):
-                    continue  # student asked about a specific term; skip courses not offered then
                 cross = set((db.lookup(b["code"]) or {}).get("also_listed_as", []))
                 if cross & seen:
                     continue  # same course under another code

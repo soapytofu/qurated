@@ -266,3 +266,31 @@ def test_empty_installation_shows_data_setup_message(page):
 def test_catalog_only_installation_explains_missing_reviews(page):
     from playwright.sync_api import expect
     expect(page.locator('#data-coverage')).to_contain_text('No Q Guide reviews are loaded yet')
+
+
+def test_default_spring_filter_legacy_storage_and_reset(page):
+    from playwright.sync_api import expect
+    # A previously unset/Any filter must pick up the new planning default.
+    page.evaluate("localStorage.setItem('qurated.filters', JSON.stringify({term: '', min_overall: 4}))")
+    page.reload()
+    page.locator('#cta-browse').click()
+    spring = page.locator('[data-key="term"] button[data-v="2027 Spring"]')
+    expect(spring).to_have_attribute('aria-pressed', 'true')
+    page.locator('#f-reset').click()
+    expect(spring).to_have_attribute('aria-pressed', 'true')
+    expect(page.locator('#f-show')).to_contain_text('50 courses')
+    page.locator('#f-show').click()
+    expect(page.locator('.card')).to_have_count(24)
+    expect(page.locator('.card .term')).to_have_text(['2027 Spring'] * 24)
+    page.locator('[data-key="term"] button[data-v="any"]').click()
+    expect(page.locator('#f-show')).to_contain_text('50 courses')
+    page.reload()
+    page.locator('#cta-browse').click()
+    expect(page.locator('[data-key="term"] button[data-v="any"]')).to_have_attribute('aria-pressed', 'true')
+    page.locator('#f-reset').click()
+    expect(spring).to_have_attribute('aria-pressed', 'true')
+    expect(page.locator('#f-show')).to_contain_text('50 courses')
+    page.set_viewport_size({'width': 375, 'height': 812})
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    Path('/tmp/qurated-playtest').mkdir(exist_ok=True)
+    page.screenshot(path='/tmp/qurated-playtest/default-spring-filters-mobile.png')

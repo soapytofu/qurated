@@ -95,6 +95,8 @@ def test_grad_courses_backfill_after_undergrad_matches():
     assert codes[-5:] == [f'TEST {i}' for i in range(45, 50)] or set(codes[-5:]) == {f'TEST {i}' for i in range(45, 50)}
     assert all(c.get('graduate_level') for c in pipeline.retrieve(db, p, k=50)[-5:])
     # Filters still apply to the backfill.
+    for course in list(db.courses.values())[1:]:
+        course['catalog']['offered'] = [dict(term='2026 Fall', sections=[])]
     assert all(c['code'] == 'TEST 0' for c in pipeline.retrieve(db, p, k=50, filters={'term': '2027 Spring'}))
 
 

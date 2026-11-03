@@ -100,7 +100,8 @@ def test_q_term_scope_controls_average_filters_and_cards_independently_of_catalo
     c = result["cards"][1]
     assert c["overall"] == 1 and c["workload_hrs"] == 8 and c["q_report_count"] == 2
     assert c["q_term"] == "2023 Fall"
-    assert db.browse({"q_term": "2023 Fall", "term": "2027 Spring"})["total"] == 1
+    assert db.browse({"q_term": "2023 Fall", "term": "2027 Spring"})["total"] == 2
+    assert db.browse({"q_term": "2023 Fall", "term": "2026 Fall"})["total"] == 1
     assert db.browse({"q_term": "2023 Fall", "min_overall": 3})["total"] == 0
     assert db.brief("TEST 0", filters={"q_term": "2023 Fall"})["overall"] == 1
 
@@ -158,4 +159,5 @@ def test_loader_includes_every_available_report_term(tmp_path, monkeypatch):
     assert db.q_terms() == list(reversed(terms))
     assert len(db.detail("TEST 0")["offerings"]) == 6
     assert db.card("TEST 0")["overall"] == sum(values) / 6
-    assert db.browse({"q_term": "2023 Fall"}, sort="overall")["cards"][0]["overall"] == 1
+    assert db.card("TEST 0", filters={"q_term": "2023 Fall"})["overall"] == 1
+    assert db.browse({"q_term": "2023 Fall"}, sort="overall")["cards"] == []  # No catalog offering.

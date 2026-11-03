@@ -5,6 +5,9 @@ browse FAS courses, compare Q-guide ratings and workload, and save favorites or 
 Answers use locally imported Q reports and my.harvard catalog records, with checks on course recommendations
 and quoted evidence. This is not an official Harvard University service.
 
+**Live app:** [qurated-34-26-14-14.sslip.io](https://qurated-34-26-14-14.sslip.io)
+(authorized Harvard College Google sign-in required).
+
 This repository contains **code and synthetic test fixtures only**. Real Q reports, catalog snapshots,
 student records, API keys, and saved HarvardKey sessions are excluded from Git. Keep Q data within its
 authorized Harvard audience; coordinate a student rollout with the relevant university offices.
@@ -118,6 +121,12 @@ uv sync --project qscrape --locked --python 3.12
 This reads public my.harvard pages without HarvardKey or paid AI calls. A full import can take hours;
 the details pass skips files already downloaded and can be rerun. Its configured catalog terms are
 currently **Fall 2026 and Spring 2027**. These are separate from historical Q-guide terms.
+
+Browsing and recommendations default to **Spring 2027** and require a matching catalog offering before
+ranking. Select another loaded term or **All catalog terms** to broaden availability. Q reports only
+supply historical review evidence; selecting a Q-report term does not change the offering term. Saved
+course details and taken-course lookup retain historical records. Update `DEFAULT_TERM` and the term
+controls when refreshing the planning semester.
 
 **Q-report import:** requires installed Google Chrome, your own authorized HarvardKey access, and Duo.
 Install the scraper dependencies above, then:

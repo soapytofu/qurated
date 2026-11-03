@@ -39,7 +39,7 @@ def test_unknown_course_offers_code_title_and_browse_guidance(monkeypatch, code)
 
 
 def test_known_course_filtered_out_is_not_claimed_unknown_or_taken(monkeypatch):
-    text = reply(database(), 'Tell me about TEST 1', [], monkeypatch, {'term': '2027 Spring'})
+    text = reply(database(mixed_terms=True), 'Tell me about TEST 1', [], monkeypatch, {'term': '2027 Spring'})
     assert "couldn't find matching courses" in text
     assert 'marked as taken' not in text and "couldn't find TEST 1" not in text
 

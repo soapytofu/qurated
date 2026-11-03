@@ -113,7 +113,7 @@ function cardHTML(c) {
       <button class="fav${on}" aria-label="Favorite ${esc(c.code)}" aria-pressed="${!!on}"${accountReady ? "" : " disabled"}>${ICON_HEART}</button>
       <div class="code">${esc(c.code)}${c.gen_ed ? ` <span class="gened">${esc(c.gen_ed)}</span>` : ""}${c.grad_level ? ' <span class="gened grad" title="Graduate-level: may need instructor permission">Graduate</span>' : ""}</div>
       <h3>${esc(c.title)}</h3>
-      ${c.next_offered ? `<div class="meets">${ICON_CAL}${esc(c.next_offered)}</div>` : ""}
+      ${c.next_offered ? `<div class="meets">${ICON_CAL}${esc(c.next_offered)}</div>` : `<p class="meta">${esc(c.availability || "No offering confirmed in the loaded catalog")}</p>`}
       ${tagsHTML(c.tags)}
       ${c.reason ? `<p class="reason">${esc(c.reason)}</p>` : ""}
       ${c.quote ? `<p class="quote">“${esc(c.quote)}”</p>` : ""}
@@ -123,7 +123,8 @@ function cardHTML(c) {
         <div class="stat"><div class="n">${fmt(c.workload_hrs)}<small>hrs</small></div><div class="l">Per week</div></div>
         <div class="stat"><div class="n">${fmt(c.recommend)}</div><div class="l">Recommend</div></div>
       </div>`}
-      ${c.instructor_score != null || c.effective_lectures != null ? `<p class="meta">Instructor ${fmt(c.instructor_score)} · Effective lectures ${fmt(c.effective_lectures)}<br>Q reports: ${esc(c.q_term || "term unavailable")} · ${fmt(c.q_report_count, 0)} reports; instructors may differ.</p>` : ""}
+      ${c.instructor_score != null || c.effective_lectures != null ? `<p class="meta">Instructor ${fmt(c.instructor_score)} · Effective lectures ${fmt(c.effective_lectures)}</p>` : ""}
+      ${c.has_q ? `<p class="meta">Historical Q reports: ${esc(c.q_term || "term unavailable")} · ${fmt(c.q_report_count, 0)} reports. Instructors may differ.</p>` : ""}
       ${c.sort_metric ? `<p class="sort-metric">${esc(c.sort_metric.label)}: <b>${c.sort_metric.value == null ? "Unavailable" : fmt(c.sort_metric.value, 2)}</b><br>Q reports: ${esc(c.q_term || "unavailable")} · ${fmt(c.q_report_count, 0)} reports</p>` : ""}
       <div class="card-foot">
         <div class="who"><span class="avatar">${esc(initials(prof))}</span><span>${esc(prof + more)}</span></div>
@@ -841,6 +842,7 @@ $("#grading-notice-close").addEventListener("click", () => {
 
 // ---------- filters: instant structured search, also hard constraints for the chatbot ----------
 let filters = store.get("qurated.filters", {});
+let defaultTerm = "2027 Spring";
 const fPanel = $("#filters");
 function activeFilters() {
   return Object.fromEntries(Object.entries(filters).filter(([, v]) => v !== "" && v !== null && v !== false && !(Array.isArray(v) && !v.length)));
@@ -852,7 +854,8 @@ function filterSummary() {
 }
 function renderFilterControls() {
   $$(".segctl", fPanel).forEach((seg) => $$("button", seg).forEach((b) =>
-    { const on = String(filters[seg.dataset.key] ?? "") === b.dataset.v; b.classList.toggle("on", on); b.setAttribute("aria-pressed", on); }));
+    { const value = seg.dataset.key === "term" ? filters.term || defaultTerm : filters[seg.dataset.key] ?? "";
+      const on = String(value) === b.dataset.v; b.classList.toggle("on", on); b.setAttribute("aria-pressed", on); }));
   $$("#f-days button").forEach(b => { const on = (filters.avoid_days || []).includes(b.dataset.v); b.classList.toggle("on", on); b.setAttribute("aria-pressed", on); });
   $("#f-q-term").value = filters.q_term || "";
   $("#f-subject").value = filters.subject || "";
@@ -1029,7 +1032,7 @@ function refreshBrowseResults() {
 function describeFilters(state) {
   const f = state.filters, parts = [];
   if (state.query) parts.push(`“${state.query}”`);
-  if (f.term) parts.push(f.term);
+  parts.push(f.term === "any" ? "All catalog terms" : f.term || defaultTerm);
   if (f.q_term) parts.push(`Q reports: ${f.q_term}`);
   if (f.subject) parts.push(f.subject);
   if (f.min_overall) parts.push(`rated ${f.min_overall}+`);
@@ -1056,6 +1059,7 @@ $("#f-show").addEventListener("click", () => { showResults(); if (window.innerWi
 
 // Populate dropdowns from the data.
 api("/api/facets").then((r) => r.json()).then((fx) => {
+  defaultTerm = fx.default_term || defaultTerm;
   $("#f-q-term").insertAdjacentHTML("beforeend", (fx.q_terms || []).map(term => `<option>${esc(term)}</option>`).join(""));
   $("#f-subject").insertAdjacentHTML("beforeend", fx.subjects.map((s) => `<option value="${esc(s.code)}">${esc(s.code)} · ${esc(s.name)} (${s.count})</option>`).join(""));
   $("#f-gen_ed").insertAdjacentHTML("beforeend", fx.gen_eds.map((g) => `<option>${esc(g)}</option>`).join(""));

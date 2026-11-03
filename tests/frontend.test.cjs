@@ -65,3 +65,20 @@ test('coverage distinguishes empty, catalog-only, historical-only and mixed data
   assert.match(mixed, /2025 Fall, 2026 Spring/);
   assert.doesNotMatch(mixed, /undefined/);
 });
+
+test('cards label historical Q dates even without instructor scores', () => {
+  const context = { accountReady: true, favorites: {}, taken: new Set(), ICON_HEART: '', ICON_CAL: '',
+    esc: value => String(value ?? ''), fmt: value => value ?? '—', initials: () => '' };
+  vm.createContext(context);
+  vm.runInContext(extract('function tagsHTML', 'function bindCards'), context);
+  const course = { code: 'TEST 0', title: 'Example', has_q: true, q_term: '2023 Fall',
+    term: '2027 Spring', next_offered: '2027 Spring · time TBA', instructors: [], tags: [] };
+  const html = context.cardHTML(course);
+  assert.match(html, /Historical Q reports: 2023 Fall/);
+  assert.match(html, /class="term">2027 Spring/);
+  assert.doesNotMatch(html, /class="term">2023 Fall/);
+  const unavailable = context.cardHTML({ ...course, term: null, next_offered: null,
+    availability: 'Not offered in 2027 Spring in the loaded catalog' });
+  assert.match(unavailable, /Not offered in 2027 Spring/);
+  assert.doesNotMatch(unavailable, /class="term">2023 Fall/);
+});

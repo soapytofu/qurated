@@ -10,6 +10,7 @@ REPORTS_DIR = Path(__file__).parent.parent / "qscrape" / "data" / "reports"
 TAGS_FILE = Path(__file__).parent / "data" / "tags.json"  # written by tag_courses.py
 CATALOG_DIR = Path(__file__).parent.parent / "qscrape" / "data" / "catalog"  # written by qscrape/catalog.py
 UPCOMING = ("2026 Fall", "2027 Spring")
+DEFAULT_TERM = "2027 Spring"
 DETAIL_FIELDS = ("description", "class_notes", "credits", "component", "grading", "gen_ed", "qrd", "divisional",
                  "level", "consent", "enrollment_cap", "syllabus_url")
 NO_Q = {"course_overall": None, "course_overall_fas_avg": None, "workload_hrs_mean": None, "recommend_mean": None,
@@ -117,6 +118,13 @@ recommend recommendations suggest suggestions find what which do does about plea
 def term_rank(term):
     year, season = term.split()
     return int(year) * 2 + TERM_ORDER.get(season, 0)
+
+
+def planning_filters(filters=None):
+    """Default to spring; 'any' means the loaded catalog terms, never Q history."""
+    result = dict(filters or {})
+    result["term"] = result.get("term") or DEFAULT_TERM
+    return result
 
 
 def tokenize(text):
@@ -291,8 +299,11 @@ class CourseDB:
     @staticmethod
     def _next(c, filters=None):
         """(term, first section) of the next upcoming offering, or (None, None)."""
+        filters = planning_filters(filters)
         for o in (c.get("catalog") or {}).get("offered", []):
-            if o["term"] in UPCOMING and (not filters or not filters.get("term") or o["term"] == filters["term"]):
+            if o["term"] in UPCOMING and (filters["term"] == "any" or o["term"] == filters["term"]):
+                if not o["sections"] and not (filters.get("avoid_days") or filters.get("earliest_start")):
+                    return o["term"], None
                 for section in o["sections"]:
                     if CourseDB.section_fits(section, filters):
                         return o["term"], section
@@ -342,10 +353,11 @@ class CourseDB:
     # format ("Lecture"|"Seminar"), include_grad
     def _term_sections(self, c, term):
         offered = (c.get("catalog") or {}).get("offered", [])
-        return [s for o in offered if not term or o["term"] == term for s in o["sections"]]
+        return [s for o in offered if o["term"] in UPCOMING and (term == "any" or o["term"] == term)
+                for s in o["sections"]]
 
     def matches(self, c, f):
-        f = f or {}
+        f = planning_filters(f)
         cat = c.get("catalog") or {}
         o = self._q(c, f.get("q_term"))
         if f.get("q_term") and not o["report_count"]:
@@ -353,7 +365,8 @@ class CourseDB:
         if not self.is_class(c) or (not f.get("include_grad") and self.is_grad_level(c)):
             return False
         term = f.get("term")
-        if term and not any(x["term"] == term for x in cat.get("offered", [])):
+        if not any(x["term"] in UPCOMING and (term == "any" or x["term"] == term)
+                   for x in cat.get("offered", [])):
             return False
         if f.get("subject") and c["code"].split()[0] != f["subject"] and \
                 not any(x.split()[0] == f["subject"] for x in c["also_listed_as"]):
@@ -453,7 +466,8 @@ class CourseDB:
             name, n = subjects.get(sub, (c["dept"] or sub, 0))
             subjects[sub] = (name, n + 1)
         return {"subjects": [{"code": k, "name": v[0], "count": v[1]} for k, v in sorted(subjects.items())],
-                "terms": list(UPCOMING), "q_terms": self.q_terms(), "gen_eds": GEN_EDS, "divisions": DIVISIONS, "days": DAY_CODES}
+                "terms": list(UPCOMING), "default_term": DEFAULT_TERM,
+                "q_terms": self.q_terms(), "gen_eds": GEN_EDS, "divisions": DIVISIONS, "days": DAY_CODES}
 
     def is_taken(self, code, taken):
         """True if the course, or any code it's cross-listed as, is in the student's taken set."""
@@ -481,6 +495,12 @@ class CourseDB:
 
     def search(self, query="", dept=None, max_workload=None, min_overall=None, min_recommend=None,
                term=None, limit=12, exclude=frozenset(), undergrad=False, filters=None):
+        include_grad = not undergrad and not filters
+        filters = planning_filters(filters)
+        if term:
+            filters["term"] = term
+        if include_grad:
+            filters["include_grad"] = True
         q_tokens = tokenize(query)
         results = []
         for code, c in self.courses.items():
@@ -488,12 +508,10 @@ class CourseDB:
                 continue
             if undergrad and not self.is_undergrad_class(c):
                 continue
-            if filters and not self.matches(c, filters):
+            if not self.matches(c, filters):
                 continue
             o = self._q(c, (filters or {}).get("q_term"))
             if dept and dept.lower() not in (c["dept"] + " " + code + " " + " ".join(c["also_listed_as"])).lower():
-                continue
-            if term and term not in {x["term"] for x in c["offerings"]}:
                 continue
             if max_workload is not None and (o["workload_hrs_mean"] is None or o["workload_hrs_mean"] > max_workload):
                 continue
@@ -507,8 +525,7 @@ class CourseDB:
             # Small quality prior, weighted by how many students responded.
             n = o["responded"] or 0
             quality = ((o["recommend_mean"] or 3) - 3) * min(n, 30) / 30
-            offered_soon = 0.5 if self._next(c)[0] else 0.0  # students are planning upcoming terms
-            results.append((relevance + quality + offered_soon, code))
+            results.append((relevance + quality, code))
         results.sort(key=lambda row: (-row[0], row[1]))
         return [self.brief(code, filters=filters) for _, code in results[:limit]]
 
@@ -541,7 +558,7 @@ class CourseDB:
             "student_consensus": c["summary"] if not q_term else None,
             "sample_comment": None if c["summary"] and not q_term else (comments[0]["text"][:160] if comments else None),
             "offered": [x["term"] for x in cat.get("offered", []) if x["term"] in UPCOMING] or "not in Fall 2026 / Spring 2027 catalog",
-            "next_meets": f"{term}: {self._meets(sec)}" if term else None,
+            "next_meets": f"{term}: {self._meets(sec) or 'time TBA'}" if term else None,
             "gen_ed": cat.get("gen_ed"),
             "qrd": cat.get("qrd"),
             "component": cat.get("component"),
@@ -568,7 +585,7 @@ class CourseDB:
         if filters:
             cat["offered"] = [{**o, "sections": [sec for sec in o["sections"] if self.section_fits(sec, filters)]}
                               for o in cat.get("offered", [])
-                              if not filters.get("term") or o["term"] == filters["term"]]
+                              if not filters.get("term") or filters["term"] == "any" or o["term"] == filters["term"]]
         if cat.get("description"):
             cat["description"] = cat["description"][:700]
         if cat.get("class_notes"):
@@ -580,7 +597,8 @@ class CourseDB:
             "catalog": cat or None,
             "tags": c["tags"] if not q_term else [], "student_consensus": c["summary"] if not q_term else None,
             "offerings": [{k: o.get(k) for k in keep} for o in offerings],
-            "comments": [x["text"][:350] for x in sorted(comments, key=lambda x: -len(x["text"]))[:max_comments]],
+            # Prefer recent reviews, then substantive comments; instructors may change between terms.
+            "comments": [x["text"][:350] for x in sorted(comments, key=lambda x: (-term_rank(x["term"]), -len(x["text"])))[:max_comments]],
             "total_comments": len(comments),
         }
 
@@ -631,8 +649,11 @@ class CourseDB:
             "code": c["code"],
             "title": c["title"],
             "dept": c["dept"],
-            "term": term or c["latest_term"],
-            "next_offered": f"{term} · {self._meets(sec)}" if term else None,
+            "term": term,
+            "next_offered": f"{term} · {self._meets(sec) or 'time TBA'}" if term else None,
+            "availability": (f"Offered in {term}" if term else
+                             "Not in the loaded catalog" if planning_filters(filters)["term"] == "any" else
+                             f"Not offered in {planning_filters(filters)['term']} in the loaded catalog"),
             "instructors": (sec or {}).get("instructors") or c["instructors"],
             "gen_ed": cat.get("gen_ed"),
             "syllabus_url": cat.get("syllabus_url"),

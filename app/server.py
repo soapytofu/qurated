@@ -30,7 +30,7 @@ import llm
 from guardrails import has_sensitive_text, PRIVACY_REPLY
 from chat_state import ChatState
 from request_safety import RequestSafetyMiddleware
-from courses import BROWSE_SORTS, EXTRA_Q_SCORES, CATALOG_DIR, CourseDB, REPORTS_DIR, TAGS_FILE, GEN_EDS, term_rank
+from courses import BROWSE_SORTS, EXTRA_Q_SCORES, CATALOG_DIR, CourseDB, REPORTS_DIR, TAGS_FILE, GEN_EDS, UPCOMING, term_rank
 
 load_dotenv(Path(__file__).parent / ".env")
 
@@ -604,7 +604,7 @@ def clean_filters(f):
     """Whitelist + type-check filter values coming from the browser."""
     f = f or {}
     out = {}
-    if f.get("term") in ("2026 Fall", "2027 Spring"):
+    if f.get("term") in (*UPCOMING, "any"):
         out["term"] = f["term"]
     if isinstance(f.get("q_term"), str) and f["q_term"] in db.q_terms():
         out["q_term"] = f["q_term"]

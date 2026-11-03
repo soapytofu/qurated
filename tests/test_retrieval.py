@@ -2,7 +2,7 @@ from courses import CourseDB
 from pipeline import retrieve
 
 
-def database():
+def database(mixed_terms=False):
     db = CourseDB.__new__(CourseDB)
     db.courses = {}
     for i in range(50):
@@ -11,19 +11,21 @@ def database():
             latest_term=None, instructors=[], offerings=[], comments=[], tags=[], summary=None,
             catalog=dict(gen_ed='Ethics and Civics', offered=[dict(
                 term='2027 Spring' if i == 0 else '2026 Fall', sections=[])]))
+        if i and not mixed_terms:
+            db.courses[code]['catalog']['offered'].append(dict(term='2027 Spring', sections=[]))
     db._build_index()
     return db
 
 
 def test_explicit_courses_obey_filters_and_taken():
-    db = database()
+    db = database(mixed_terms=True)
     p = dict(queries=[], codes=['TEST 1', 'TEST 0'], term='any', gen_ed=False, max_workload=0)
     assert [c['code'] for c in retrieve(db, p, filters={'term': '2027 Spring'})] == ['TEST 0']
     assert retrieve(db, p, taken={'TEST 0'}, filters={'term': '2027 Spring'}) == []
 
 
 def test_term_filter_before_ranking_cutoff():
-    db = database()
+    db = database(mixed_terms=True)
     p = dict(queries=['Interesting'], codes=[], term='2027 Spring', gen_ed=True, max_workload=0)
     assert [c['code'] for c in retrieve(db, p)] == ['TEST 0']
 

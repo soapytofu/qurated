@@ -198,7 +198,7 @@ def test_historical_review_terms_are_not_enrollment_terms(question):
     p = pipeline.plan(fixture(), question, {})
     assert p['term'] == 'any' and p['codes'] == ['TEST 0']
     assert not p['clarifications']
-    assert pipeline.effective_filters(p) == ({'q_term': '2025 Fall'}, [])
+    assert pipeline.effective_filters(p) == ({'q_term': '2025 Fall', 'term': '2027 Spring'}, [])
 
 
 def test_review_and_enrollment_dates_are_bound_independently():
@@ -217,7 +217,7 @@ def test_review_scope_does_not_erase_unbound_numeric_metrics_or_accept_negation(
     db = fixture()
     p = pipeline.plan(db, 'Ethics courses with course rating at least 4.5 using Fall 2025 Q reports', {})
     assert p['numeric_filters'] == {'min_overall': 4.5}
-    assert pipeline.effective_filters(p) == ({'min_overall': 4.5, 'q_term': '2025 Fall'}, [])
+    assert pipeline.effective_filters(p) == ({'min_overall': 4.5, 'q_term': '2025 Fall', 'term': '2027 Spring'}, [])
     p = pipeline.plan(db, 'TEST0 without Fall 2025 reviews', {})
     assert p['clarifications'] and pipeline.retrieve(db, p) == []
 
@@ -245,7 +245,7 @@ def test_ui_filters_persist_but_explicit_clear_is_respected(chat):
     ask('Show more options')
     assert captured[-1]['active_filters']['term'] == '2027 Spring'
     ask('Show more options', filters={})
-    assert 'term' not in captured[-1]['active_filters']
+    assert captured[-1]['active_filters']['term'] == '2027 Spring'  # Clearing restores the default.
 
 
 def test_pending_review_term_correction_is_not_an_enrollment_date(chat):
@@ -254,7 +254,7 @@ def test_pending_review_term_correction_is_not_an_enrollment_date(chat):
     assert not cards(events) and state['course_context']['pending']['kind'] == 'clarification'
     events, state = ask('Fall 2025')
     assert cards(events)
-    assert captured[-1]['active_filters'] == {'q_term': '2025 Fall'}
+    assert captured[-1]['active_filters'] == {'q_term': '2025 Fall', 'term': '2027 Spring'}
 
 
 def test_pending_choice_survives_missing_history_and_preserves_restrictions():

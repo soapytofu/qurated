@@ -33,7 +33,7 @@ def test_structured_schedule_filters_intersect_and_are_idempotent():
     p = plan(database(), 'no Monday classes starting at or after 10am', {})
     f, issues = effective_filters(p, {'avoid_days':['F'],'earliest_start':660})
     assert not issues
-    assert f == {'avoid_days':['F','M'],'earliest_start':660}
+    assert f == {'avoid_days':['F','M'],'earliest_start':660,'term':'2027 Spring'}
     assert effective_filters(p, f)[0] == f
 
 

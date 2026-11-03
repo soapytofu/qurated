@@ -54,7 +54,7 @@ def test_inclusive_and_strict_bounds_exclude_unknowns():
 def test_stricter_selected_and_saved_limits_remain_in_force():
     p = plan(database(), 'rated at least 4 and at most five hours', {'max_workload_hrs': 3})
     f, issues = effective_filters(p, {'min_overall': 4.8})
-    assert f == {'min_overall': 4.8, 'max_workload': 3}
+    assert f == {'min_overall': 4.8, 'max_workload': 3, 'term': '2027 Spring'}
     assert not issues
 
 
