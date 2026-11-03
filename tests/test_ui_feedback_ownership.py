@@ -10,7 +10,20 @@ def submit_feedback(page):
 
 
 def succeed(route):
-    route.fulfill(content_type="application/json", body='{"ok":true}')
+    route.fulfill(content_type="application/json", body='{"ok":true,"delivery":"queued"}')
+
+
+def test_saved_only_feedback_does_not_claim_email_delivery(page):
+    page.route("**/api/feedback", lambda route: route.fulfill(
+        content_type="application/json", body='{"ok":true,"delivery":"saved"}'))
+    submit_feedback(page)
+    expect(page.locator("#fb-status")).to_contain_text("Email delivery is temporarily unavailable")
+
+
+def test_feedback_explains_recipient_and_keeps_email_opt_in(page):
+    page.locator("#open-feedback").click()
+    expect(page.locator("#feedback")).to_contain_text("sophiezeng@college.harvard.edu")
+    expect(page.locator("#fb-include-email")).not_to_be_checked()
 
 
 def test_success_timer_does_not_close_newly_opened_preferences(page):

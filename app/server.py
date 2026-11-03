@@ -9,6 +9,7 @@ import time
 import threading
 import uuid
 from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 from datetime import date, datetime
 from pathlib import Path
 
@@ -28,6 +29,7 @@ import guard
 import pipeline
 import conversation_context
 import llm
+import feedback_mail
 from guardrails import has_sensitive_text, PRIVACY_REPLY
 from chat_state import ChatState
 from request_safety import RequestSafetyMiddleware
@@ -492,7 +494,19 @@ def _run_fast_chat(history, prior, message, preferences, favorites, taken, filte
     yield sse({"type": "usage", "searched": search})
 
 
-app = FastAPI()
+feedback_outbox = feedback_mail.from_environment()
+
+
+@asynccontextmanager
+async def lifespan(app):
+    feedback_outbox.start()
+    try:
+        yield
+    finally:
+        feedback_outbox.stop()
+
+
+app = FastAPI(lifespan=lifespan)
 app.add_middleware(RequestSafetyMiddleware)
 SESSION_SECRET = os.environ.get("SESSION_SECRET")
 if not SESSION_SECRET:
@@ -560,8 +574,8 @@ def me(user=Depends(current_user)):
 
 
 # ---- Feedback ----
-FEEDBACK_FILE = Path(__file__).parent / "data" / "feedback.jsonl"
 feedback_today: dict[tuple, int] = defaultdict(int)
+_feedback_lock = threading.Lock()
 
 
 class Feedback(BaseModel):
@@ -576,21 +590,23 @@ def feedback(body: Feedback, user=Depends(current_user)):
     if not text:
         raise HTTPException(400, "Please write something first.")
     key = (user["email"], today())
-    if feedback_today[key] >= 10:
-        raise HTTPException(429, "Thanks! You've sent a lot of feedback today. Try again tomorrow.")
-    feedback_today[key] += 1
     entry = {
-        "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "id": str(uuid.uuid4()),
+        "at": datetime.now(CAMPUS_TZ).isoformat(),
         "kind": body.kind if body.kind in ("bug", "idea", "other") else "other",
         "message": text[:3000],
         # Email only when the student opts in; the sign-in page promises we use it just for verification.
         "email": user["email"] if body.include_email else None,
     }
-    FEEDBACK_FILE.parent.mkdir(exist_ok=True)
-    with FEEDBACK_FILE.open("a") as f:
-        f.write(json.dumps(entry) + "\n")
-    print(f"[feedback] {entry['kind']}: {entry['message'][:80]}", flush=True)
-    return {"ok": True}
+    with _feedback_lock:
+        if feedback_today[key] >= 10:
+            raise HTTPException(429, "Thanks! You've sent a lot of feedback today. Try again tomorrow.")
+        try:
+            feedback_outbox.enqueue(entry)
+        except Exception:
+            raise HTTPException(503, "Couldn't save your feedback. Please try again.") from None
+        feedback_today[key] += 1
+    return {"ok": True, "delivery": "queued" if feedback_outbox.configured else "saved"}
 
 
 # ---- App API (signed-in only) ----

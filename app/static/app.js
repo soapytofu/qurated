@@ -819,7 +819,9 @@ $("#feedback-form").addEventListener("submit", async (e) => {
     if (!current()) return;
     $("#fb-message").value = "";
     fbStatus.className = "fb-status";
-    fbStatus.textContent = "Thanks! We read every message.";
+    fbStatus.textContent = body.delivery === "saved"
+      ? "Thanks! Your feedback is saved. Email delivery is temporarily unavailable."
+      : "Thanks! Your feedback is saved and queued for email.";
     fbStatus.hidden = false;
     feedbackCloseTimer = setTimeout(() => {
       feedbackCloseTimer = null;

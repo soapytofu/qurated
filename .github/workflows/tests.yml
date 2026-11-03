@@ -20,7 +20,7 @@ jobs:
           for source in app/static/*.js; do
             node --check "$source" || exit
           done
-      - run: node --test tests/frontend.test.cjs
+      - run: node --test tests/*.test.cjs
       - run: app/.venv/bin/python -m playwright install --with-deps chromium
       - run: app/.venv/bin/python -m pytest tests/test_ui*.py -q
         env:

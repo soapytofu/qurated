@@ -266,8 +266,10 @@ catalog term also requires updating term handling in the app, not just importing
 **What persists, and what should I back up?**
 
 Favorites, taken courses, preferences, daily counts, and recorded spend live in SQLite at
-`app/data/qurated.db` by default. Feedback lives in `app/data/feedback.jsonl`; its email field is included
-only when the sender opts in. Back up account data privately using SQLite's backup tools or while the
+`app/data/qurated.db` by default. New feedback and its email delivery queue live in
+`app/data/feedback-mail.db`; older submissions remain in `app/data/feedback.jsonl`.
+Feedback is emailed to sophiezeng@college.harvard.edu using the [mail relay](deploy/feedback-mail.md).
+The submitter's email is included only when they opt in. Back up both databases privately using SQLite's backup tools or while the
 server is stopped. Chat history is process-local, retains three exchanges, and expires after an idle
 hour; it is lost on restart. Keep `.env`, reports, tags, and scraper sessions private too.
 
