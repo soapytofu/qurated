@@ -148,3 +148,33 @@ def test_named_course_does_not_fall_back_to_other_courses_mentioning_its_code():
     assert not excluded['clarifications']
     assert excluded['exclude'] == ['COMPSCI 1240']
     assert all(c['code'] != 'COMPSCI 1240' for c in retrieve(db, excluded))
+
+
+@pytest.mark.parametrize('historical_record', [False, True])
+@pytest.mark.parametrize('query', ['cs152', 'CS 152', 'COMPSCI152', 'CS1520'])
+def test_cs152_finds_current_spring_offering_without_relaxing_filters(query, historical_record):
+    from copy import deepcopy
+    from pipeline import plan, retrieve
+    db = database()
+    current = db.courses.pop('TEST 0')
+    current.update(code='COMPSCI 1520', title='Programming Languages')
+    db.courses[current['code']] = current
+    if historical_record:
+        old = deepcopy(current)
+        old.update(code='COMPSCI 152', catalog=None, latest_term='2024 Spring')
+        db.courses[old['code']] = old
+    db._build_index()
+    filters = {'term': '2027 Spring', 'subject': 'COMPSCI'}
+    result = db.browse(query=query, f=filters)
+    assert result['total'] == 1
+    assert result['cards'][0]['code'] == 'COMPSCI 1520'
+    assert result['cards'][0]['term'] == '2027 Spring'
+    p = plan(db, query, {})
+    assert [c['code'] for c in retrieve(db, p, filters=filters)] == ['COMPSCI 1520']
+    assert retrieve(db, p, filters={'term': '2026 Fall'}) == []
+    assert retrieve(db, p, filters=filters, taken={'CS152'}) == []
+    assert db.browse(query=query, exclude={'CS1520'})['total'] == 0
+    picks, _ = validate_answer({'picks': [{'code': 'CS152', 'reason': 'Matches.', 'quote': ''}],
+                               'advice': 'Check the current catalog.'},
+                              [{'code': 'COMPSCI 1520'}], [], db, lambda *args: None)
+    assert picks[0]['code'] == 'COMPSCI 1520'

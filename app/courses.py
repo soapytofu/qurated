@@ -90,8 +90,10 @@ GEN_EDS = ["Aesthetics and Culture", "Ethics and Civics", "Histories, Societies,
            "Science and Technology in Society"]
 DIVISIONS = ["Arts and Humanities", "Social Sciences", "Science & Engineering & Applied Science"]
 DAY_CODES = ["M", "T", "W", "Th", "F"]
-# Explicit equivalence supplied by the project owner; do not strip zeros generally.
-CODE_EQUIVALENTS = ({"COMPSCI124", "COMPSCI1240"},)
+# Verified renumberings; never infer equivalence by stripping a trailing zero.
+# Harvard lists CS1240 (formerly CS124) and CS1520 (formerly CS152):
+# https://csadvising.seas.harvard.edu/concentration/courses/tags/
+CODE_EQUIVALENTS = ({"COMPSCI124", "COMPSCI1240"}, {"COMPSCI152", "COMPSCI1520"})
 
 
 def normalized_code(code):
